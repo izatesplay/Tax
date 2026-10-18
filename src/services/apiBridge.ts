@@ -9,6 +9,16 @@ export interface ApiStatusResult {
   ok: boolean;
   message: string;
   data?: any;
+  engine?: string;
+}
+
+export interface MysqlServerConfig {
+  enabled: boolean;
+  host: string;
+  user: string;
+  password?: string;
+  database: string;
+  port: number;
 }
 
 export function getSavedApiMode(): ApiMode {
@@ -55,7 +65,7 @@ function resolveUrls(mode: ApiMode, customUrl: string) {
     };
   }
 
-  // Default: Built-in Cloud Database on the app server
+  // Default: Built-in Server with native MySQL support
   return {
     statusUrl: '/api/status',
     getUrl: '/api/data',
@@ -99,6 +109,7 @@ export async function checkApiStatus(
         ok: true,
         message: json.message || 'ارتباط با پایگاه داده برقرار است.',
         data: json.data,
+        engine: json.engine,
       };
     } else {
       return {
@@ -163,8 +174,9 @@ export async function syncAllToDatabase(
     if (json.status === 'success' || res.ok) {
       return {
         ok: true,
-        message: json.message || 'اطلاعات با موفقیت در دیتابیس ذخیره شد ✅',
+        message: json.message || 'اطلاعات با موفقیت در دیتابیس MySQL ذخیره شد ✅',
         data: json.data,
+        engine: json.engine,
       };
     } else {
       return {
@@ -188,7 +200,7 @@ export async function syncAllToDatabase(
 export async function fetchAllFromDatabase(
   endpointUrl?: string,
   modeOverride?: ApiMode
-): Promise<{ ok: boolean; message: string; data?: KharjYarStorageData }> {
+): Promise<{ ok: boolean; message: string; data?: KharjYarStorageData; engine?: string }> {
   const mode = modeOverride || getSavedApiMode();
   const custom = endpointUrl !== undefined ? endpointUrl : getSavedApiEndpoint();
 
@@ -220,6 +232,7 @@ export async function fetchAllFromDatabase(
         ok: true,
         message: json.message || 'داده‌ها با موفقیت از دیتابیس دریافت شدند.',
         data: payload as KharjYarStorageData,
+        engine: json.engine,
       };
     } else {
       return {
@@ -233,6 +246,70 @@ export async function fetchAllFromDatabase(
       message: error.name === 'AbortError'
         ? 'مهلت زمان دریافت داده‌ها پایان یافت.'
         : `خطا در دریافت اطلاعات از سرور: ${error?.message || 'مشکل ارتباط شبکه'}`,
+    };
+  }
+}
+
+/**
+ * Fetch MySQL server settings from backend
+ */
+export async function fetchServerMysqlConfig(): Promise<MysqlServerConfig | null> {
+  try {
+    const res = await fetch('/api/mysql/config');
+    const json = await res.json();
+    if (json.status === 'success') {
+      return json.config;
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Save MySQL server settings to backend
+ */
+export async function saveServerMysqlConfig(
+  config: Partial<MysqlServerConfig>
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch('/api/mysql/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    const json = await res.json();
+    return {
+      ok: json.status === 'success',
+      message: json.message || 'تنظیمات ذخیره شد.',
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      message: `خطا در ذخیره تنظیمات: ${err.message}`,
+    };
+  }
+}
+
+/**
+ * Test MySQL credentials on backend
+ */
+export async function testServerMysqlConnection(
+  config: Partial<MysqlServerConfig>
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch('/api/mysql/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    const json = await res.json();
+    return {
+      ok: json.status === 'success',
+      message: json.message,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      message: `خطا در تست سرور MySQL: ${err.message}`,
     };
   }
 }

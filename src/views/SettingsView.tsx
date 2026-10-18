@@ -55,6 +55,7 @@ interface SettingsViewProps {
   onOpenPettyCashModal: (mode: 'set_balance' | 'recharge') => void;
   syncStatus?: SyncStatus;
   onManualSync?: () => void;
+  onOpenDatabaseSettings?: () => void;
 }
 
 const CATEGORY_COLORS = [
@@ -80,6 +81,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onOpenPettyCashModal,
   syncStatus,
   onManualSync,
+  onOpenDatabaseSettings,
 }) => {
   const pettySummary = calculatePettyCashSummary(data.pettyCash, data.expenses);
 
@@ -720,6 +722,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </span>
 
               <div className="flex items-center gap-2">
+                {onOpenDatabaseSettings && (
+                  <button
+                    type="button"
+                    onClick={onOpenDatabaseSettings}
+                    className="min-h-[38px] px-3.5 bg-[#102A21] hover:bg-[#183D30] border border-[#45D69B]/40 text-[#45D69B] font-semibold text-xs rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Server size={13} />
+                    <span>پیکربندی سرور MySQL</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleTestApi}

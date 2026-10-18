@@ -29,6 +29,7 @@ import { Navbar } from './components/Navbar';
 import { ExpenseModal } from './components/ExpenseModal';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
 import { PettyCashModal } from './components/PettyCashModal';
+import { MysqlConfigModal } from './components/MysqlConfigModal';
 import { Toast, ToastMessage } from './components/Toast';
 import { HomeView } from './views/HomeView';
 import { ExpensesView } from './views/ExpensesView';
@@ -39,7 +40,7 @@ export default function App() {
   const [data, setData] = useState<KharjYarStorageData>(() => loadStorageData());
   const [activeTab, setActiveTab] = useState<TabType>('home');
 
-  // Cloud & Database Sync Status
+  // Cloud & MySQL Database Sync Status
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
     isOnline: navigator.onLine,
     isSyncing: false,
@@ -48,16 +49,15 @@ export default function App() {
     mode: getSavedApiMode(),
   });
 
-  // Expense modal state
+  // Modal states
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [expenseToEdit, setExpenseToEdit] = useState<Expense | null>(null);
 
-  // Petty Cash modal state
   const [isPettyCashModalOpen, setIsPettyCashModalOpen] = useState(false);
   const [pettyCashModalMode, setPettyCashModalMode] = useState<'set_balance' | 'recharge'>('set_balance');
 
-  // Delete modal state
   const [expenseToDelete, setExpenseToDelete] = useState<Expense | null>(null);
+  const [isMysqlModalOpen, setIsMysqlModalOpen] = useState(false);
 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -78,7 +78,7 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Sync to database backend
+  // Save changes to database immediately (Real-time push)
   const pushToRemote = useCallback(
     async (payload: KharjYarStorageData) => {
       isSyncingRef.current = true;
@@ -111,7 +111,7 @@ export default function App() {
         setSyncStatus((prev) => ({
           ...prev,
           isSyncing: false,
-          error: err?.message || 'خطا در ارتباط با دیتابیس',
+          error: err?.message || 'خطا در ارتباط با دیتابیس MySQL',
           mode: getSavedApiMode(),
         }));
       } finally {
@@ -121,7 +121,7 @@ export default function App() {
     []
   );
 
-  // Persist data locally and automatically sync to remote database
+  // Persist data locally and immediately push to MySQL database
   const updateData = useCallback(
     (newData: KharjYarStorageData, shouldPushToRemote = true) => {
       setData(newData);
@@ -134,7 +134,7 @@ export default function App() {
     [pushToRemote]
   );
 
-  // Fetch latest data from database
+  // Fetch freshest data directly from MySQL database (Real-time pull)
   const pullFromRemote = useCallback(
     async (quiet = false) => {
       if (isSyncingRef.current) return;
@@ -147,28 +147,27 @@ export default function App() {
           const remoteData = res.data;
           const currentLocal = latestDataRef.current;
 
-          // If remote has expenses or remote was updated more recently
           const remoteExpenses = Array.isArray(remoteData.expenses) ? remoteData.expenses : [];
           const localExpenses = Array.isArray(currentLocal.expenses) ? currentLocal.expenses : [];
 
-          // Case 1: Remote has data and local is empty -> adopt remote
-          if (remoteExpenses.length > 0 && localExpenses.length === 0) {
+          // Case 1: Remote database has expenses or has categories -> adopt remote as source of truth
+          if (remoteExpenses.length > 0 || (localExpenses.length === 0 && remoteData.categories?.length > 0)) {
             setData(remoteData);
             saveStorageData(remoteData);
             if (!quiet) {
-              showToast('اطلاعات با موفقیت از دیتابیس همگام‌سازی شد ☁️', 'info');
+              showToast('اطلاعات با موفقیت از دیتابیس MySQL همگام‌سازی شد 🗄️', 'info');
             }
           }
-          // Case 2: Local has data but remote is empty (first migration) -> push to remote
+          // Case 2: First-run migration - local has expenses but remote MySQL database is fresh
           else if (localExpenses.length > 0 && remoteExpenses.length === 0) {
             await syncAllToDatabase(undefined, currentLocal);
           }
-          // Case 3: Compare updatedAt timestamps
+          // Case 3: Compare timestamps
           else {
             const remoteTime = remoteData.updatedAt ? new Date(remoteData.updatedAt).getTime() : 0;
             const localTime = currentLocal.updatedAt ? new Date(currentLocal.updatedAt).getTime() : 0;
 
-            if (remoteTime > localTime) {
+            if (remoteTime >= localTime) {
               setData(remoteData);
               saveStorageData(remoteData);
             }
@@ -198,7 +197,7 @@ export default function App() {
         setSyncStatus((prev) => ({
           ...prev,
           isSyncing: false,
-          error: err?.message || 'خطا در بارگذاری از دیتابیس',
+          error: err?.message || 'خطا در بارگذاری از دیتابیس MySQL',
           mode: getSavedApiMode(),
         }));
       } finally {
@@ -208,12 +207,11 @@ export default function App() {
     [showToast]
   );
 
-  // Initial pull on mount & periodic polling for multi-device sync
+  // Initial pull on mount & fast real-time polling every 5 seconds
   useEffect(() => {
-    // Initial fetch from database
+    // Read from MySQL database right on startup
     pullFromRemote(true);
 
-    // Online/offline handlers
     const handleOnline = () => {
       setSyncStatus((prev) => ({ ...prev, isOnline: true }));
       pullFromRemote(true);
@@ -225,7 +223,7 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Background sync on tab focus or visibility change (e.g. mobile unlock)
+    // Instant sync when returning to the tab or unlocking phone screen
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         pullFromRemote(true);
@@ -234,12 +232,12 @@ export default function App() {
     window.addEventListener('focus', handleVisibilityChange);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // Periodic polling every 12 seconds so all devices stay updated in real-time
+    // Fast polling every 5 seconds so multi-device updates appear in real-time
     const intervalId = setInterval(() => {
       if (document.visibilityState === 'visible' && !isSyncingRef.current) {
         pullFromRemote(true);
       }
-    }, 12000);
+    }, 5000);
 
     return () => {
       window.removeEventListener('online', handleOnline);
@@ -250,19 +248,19 @@ export default function App() {
     };
   }, [pullFromRemote]);
 
-  // Open add modal
+  // Open add expense modal
   const handleOpenAddExpense = () => {
     setExpenseToEdit(null);
     setIsExpenseModalOpen(true);
   };
 
-  // Open edit modal
+  // Open edit expense modal
   const handleOpenEditExpense = (expense: Expense) => {
     setExpenseToEdit(expense);
     setIsExpenseModalOpen(true);
   };
 
-  // Save Expense (both Add and Edit)
+  // Save Expense (both Add and Edit) - Instant save to MySQL
   const handleSaveExpense = (expenseData: {
     title: string;
     amount: number;
@@ -296,7 +294,7 @@ export default function App() {
 
       setIsExpenseModalOpen(false);
       setExpenseToEdit(null);
-      showToast('هزینه با موفقیت ویرایش شد ✅', 'success');
+      showToast('هزینه با موفقیت ویرایش و در دیتابیس ذخیره شد ✅', 'success');
     } else {
       // Add new expense
       const newExpense: Expense = {
@@ -317,7 +315,7 @@ export default function App() {
       });
 
       setIsExpenseModalOpen(false);
-      showToast('هزینه‌ات ثبت شد ✅', 'success');
+      showToast('هزینه‌ات در دیتابیس ثبت شد ✅', 'success');
     }
   };
 
@@ -326,7 +324,7 @@ export default function App() {
     setExpenseToDelete(expense);
   };
 
-  // Confirm Delete
+  // Confirm Delete - Instant save to MySQL
   const handleConfirmDelete = () => {
     if (!expenseToDelete) return;
     const remaining = data.expenses.filter((e) => e.id !== expenseToDelete.id);
@@ -336,10 +334,10 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     });
     setExpenseToDelete(null);
-    showToast('هزینه با موفقیت حذف شد 🗑️', 'success');
+    showToast('هزینه با موفقیت حذف و از دیتابیس پاک شد 🗑️', 'success');
   };
 
-  // Petty cash handlers
+  // Petty cash handlers - Instant save to MySQL
   const handleOpenPettyCashModal = (mode: 'set_balance' | 'recharge' = 'set_balance') => {
     setPettyCashModalMode(mode);
     setIsPettyCashModalOpen(true);
@@ -351,7 +349,7 @@ export default function App() {
       pettyCash: updatedConfig,
       updatedAt: new Date().toISOString(),
     });
-    showToast('موجودی تنخواه با موفقیت به‌روزرسانی شد ✅', 'success');
+    showToast('موجودی تنخواه در دیتابیس به‌روزرسانی شد ✅', 'success');
   };
 
   // Clear all data
@@ -372,11 +370,12 @@ export default function App() {
       {/* Toast notifications */}
       <Toast toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Top Header with live sync status */}
+      {/* Top Header with live MySQL sync status */}
       <Header
         onOpenAddExpense={handleOpenAddExpense}
         syncStatus={syncStatus}
         onManualSync={() => pullFromRemote(false)}
+        onOpenDatabaseSettings={() => setIsMysqlModalOpen(true)}
       />
 
       {/* Main View Area */}
@@ -424,6 +423,7 @@ export default function App() {
             onOpenPettyCashModal={handleOpenPettyCashModal}
             syncStatus={syncStatus}
             onManualSync={() => pullFromRemote(false)}
+            onOpenDatabaseSettings={() => setIsMysqlModalOpen(true)}
           />
         )}
       </main>
@@ -458,6 +458,14 @@ export default function App() {
         expense={expenseToDelete}
         onConfirm={handleConfirmDelete}
         onCancel={() => setExpenseToDelete(null)}
+      />
+
+      {/* MySQL Database Configuration Modal */}
+      <MysqlConfigModal
+        isOpen={isMysqlModalOpen}
+        onClose={() => setIsMysqlModalOpen(false)}
+        onSuccess={(msg) => showToast(msg, 'success')}
+        onTriggerSync={() => pullFromRemote(false)}
       />
     </div>
   );
