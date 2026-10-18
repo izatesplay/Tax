@@ -1,0 +1,6 @@
+{
+  "name": "خرجیار - مدیریت هوشمند هزینه شخصی",
+  "description": "وب‌اپلیکیشن کاربردی و سریع مدیریت هزینه‌های شخصی با تقویم شمسی، مبالغ به تومان و گزارش‌های تحلیلی.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
