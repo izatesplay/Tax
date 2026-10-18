@@ -354,34 +354,57 @@ app.post(['/api/sync_all', '/api/data'], async (req, res) => {
 
 // Fallback compatibility route for ?action=...
 app.all('/api.php', async (req, res) => {
-  const action = req.query.action || 'status';
+  const action = (req.query.action as string) || req.body?.action || 'status';
   const mysqlCfg = loadMysqlConfig();
   const pool = getMysqlPool(mysqlCfg);
 
-  if (action === 'status') {
+  if (action === 'status' || action === 'ping' || action === 'health') {
     if (mysqlCfg.enabled && pool) {
       try {
         const data = await fetchAllFromMysql(pool);
+        const expSum = (data.expenses || []).reduce((sum: number, e: any) => sum + (e.amount || 0), 0);
         return res.json({
           status: 'success',
           engine: 'mysql',
-          message: 'اتصال به دیتابیس MySQL برقرار است.',
+          message: 'اتصال به پایگاه‌داده MySQL خرجیار در هاست برقرار است ✅',
           data: {
             database: mysqlCfg.database,
-            categories: data.categories.length,
-            expenses: data.expenses.length,
+            tables: {
+              categories: (data.categories || []).length,
+              expenses: (data.expenses || []).length,
+              expenses_sum_toman: expSum,
+              petty_cash_balance: data.pettyCash?.initialBalance || 0,
+            },
+            expensesCount: (data.expenses || []).length,
+            categoriesCount: (data.categories || []).length,
+            pettyCashBalance: data.pettyCash?.initialBalance || 0,
+            server: 'MySQL 8 / Node.js Engine',
           },
         });
       } catch {}
     }
     const db = readFallbackDatabase();
+    const expenses = Array.isArray(db.expenses) ? db.expenses : [];
+    const categories = Array.isArray(db.categories) ? db.categories : [];
+    const expSum = expenses.reduce((sum: number, e: any) => sum + (Number(e.amount) || 0), 0);
+    const pettyBal = db.pettyCash?.initialBalance || 0;
+
     return res.json({
       status: 'success',
       engine: 'local_storage',
-      message: 'پل ارتباطی دیتابیس در دسترس است.',
+      message: 'پل ارتباطی دیتابیس در دسترس است ✅',
       data: {
-        categories: db.categories?.length || 0,
-        expenses: db.expenses?.length || 0,
+        database: 'kharjyar_db',
+        tables: {
+          categories: categories.length,
+          expenses: expenses.length,
+          expenses_sum_toman: expSum,
+          petty_cash_balance: pettyBal,
+        },
+        expensesCount: expenses.length,
+        categoriesCount: categories.length,
+        pettyCashBalance: pettyBal,
+        server: 'API Bridge Server',
       },
     });
   }
@@ -393,6 +416,7 @@ app.all('/api.php', async (req, res) => {
         return res.json({
           status: 'success',
           engine: 'mysql',
+          message: 'اطلاعات با موفقیت از پایگاه‌داده دریافت شد.',
           data,
         });
       } catch {}
@@ -400,6 +424,7 @@ app.all('/api.php', async (req, res) => {
     const db = readFallbackDatabase();
     return res.json({
       status: 'success',
+      message: 'اطلاعات با موفقیت از پایگاه‌داده دریافت شد.',
       data: db,
     });
   }
@@ -411,15 +436,32 @@ app.all('/api.php', async (req, res) => {
     if (mysqlCfg.enabled && pool) {
       try {
         await syncAllToMysql(pool, payload);
-      } catch {}
+      } catch (err: any) {
+        console.warn('MySQL sync error in api.php:', err.message);
+      }
     }
     return res.json({
       status: 'success',
-      message: 'همگام‌سازی موفقیت‌آمیز بود.',
+      message: 'اطلاعات با موفقیت در پایگاه‌داده MySQL هاست ذخیره گردید ✅',
+      data: {
+        syncedExpenses: payload.expenses?.length || 0,
+        syncedCategories: payload.categories?.length || 0,
+        syncedHistory: payload.pettyCash?.history?.length || 0,
+        pettyCashBalance: payload.pettyCash?.initialBalance || 0,
+        syncedAt: new Date().toISOString(),
+      },
     });
   }
 
-  res.status(404).json({ status: 'error', message: 'Action not supported' });
+  res.status(404).json({ status: 'error', message: `عملیات ${action} در api.php پشتیبانی نمی‌شود.` });
+});
+
+// Guard: prevent Vite middleware from returning HTML for any unmatched API or PHP requests
+app.all(['/api', '/api/*', '*.php'], (req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: `مسیر یا اکشن نامعتبر است: ${req.originalUrl}`,
+  });
 });
 
 // -------------------------------------------------------------

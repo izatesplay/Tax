@@ -1,49 +1,38 @@
 <?php
 /**
- * پل ارتباطی پایگاه‌داده MySQL و cPanel برای اپلیکیشن خرجیار
+ * پل ارتباطی پایگاه‌داده MySQL و cPanel برای اپلیکیشن مدیریت مالی «خرجیار»
  * KharjYar - Self-Contained PHP & MySQL API Bridge for cPanel / phpMyAdmin
  *
- * بدون هیچ وابستگی خارجی (Pure PHP + MySQLi)
- * دارای ساخت خودکار جداول (Auto Schema Generator) و پشتیبانی کامل از کاراکترهای فارسی (utf8mb4)
+ * ویژگی‌های این اسکریپت:
+ * ۱. کاملاً مستقل و خودکفا بدون هیچ‌گونه نیاز به کتابخانه یا وابستگی خارجی (Pure PHP + MySQLi).
+ * ۲. ساخت خودکار دیتابیس و تمامی جداول مورد نیاز برنامه در نخستین اجرا (Auto Schema Migration).
+ * ۳. پشتیبانی کامل از زبان فارسی و کاراکترهای یونیکد (utf8mb4).
+ * ۴. پشتیبانی بومی از CORS برای دسترسی امن از هر دامنه و مرورگر.
+ * ۵. تراکنش‌های اتمیک (ACID Transaction) جهت حفظ یکپارچگی داده‌ها در ذخیره‌سازی همگانی.
+ * ۶. بدون چاپ هیچ‌گونه خروجی HTML یا اخطار؛ همواره پاسخ معتبر استاندارد JSON برمی‌گرداند.
  */
 
 // -------------------------------------------------------------
-// ۱. تنظیمات CORS و هدرهای خروجی JSON با پشتیبانی از فارسی
+// ۱. هدرهای CORS و فرمت خروجی JSON
 // -------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept");
 header("Content-Type: application/json; charset=utf-8");
 
-// مدیریت درخواست‌های Preflight (OPTIONS)
+// پاسخ سریع به درخواست‌های مقدماتی (Preflight OPTIONS)
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
+    echo json_encode(['status' => 'success', 'message' => 'CORS preflight OK'], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-// جلوگیری از نمایش خطاهای خام پیش‌فرض به شکل HTML که خروجی JSON را خراب می‌کنند
-mysqli_report(MYSQLI_REPORT_OFF);
+// غیرفعال‌سازی نمایش خطاهای خام PHP به صورت HTML که ساختار JSON را خراب می‌کنند
 error_reporting(0);
+ini_set('display_errors', '0');
+mysqli_report(MYSQLI_REPORT_OFF);
 
-// -------------------------------------------------------------
-// ۲. تنظیمات اتصال به دیتابیس MySQL در cPanel
-// -------------------------------------------------------------
-/*
- * راهنمای ویرایش برای هاست cPanel:
- * ==============================================================
- * ۱. در cPanel به بخش "MySQL® Database Wizard" بروید.
- * ۲. یک دیتابیس جدید بسازید (نام کامل معمولاً به شکل username_dbname است).
- * ۳. یک کاربر جدید با رمز عبور قوی بسازید و تمام دسترسی‌ها (ALL PRIVILEGES) را بدهید.
- * ۴. مقادیر زیر را با اطلاعات هاست خود جایگزین کنید:
- * ==============================================================
- */
-define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
-define('DB_USER', getenv('DB_USER') ?: 'root');            // نام کاربری دیتابیس در cPanel
-define('DB_PASS', getenv('DB_PASS') ?: '');                // رمز عبور دیتابیس در cPanel
-define('DB_NAME', getenv('DB_NAME') ?: 'kharjyar_db');     // نام دیتابیس در cPanel
-define('DB_PORT', (int)(getenv('DB_PORT') ?: 3306));
-
-// تابع پاسخگویی استاندارد JSON
+// تابع ارسال پاسخ استاندارد JSON
 function sendResponse($status, $message, $data = null, $httpCode = 200) {
     http_response_code($httpCode);
     $payload = [
@@ -59,38 +48,62 @@ function sendResponse($status, $message, $data = null, $httpCode = 200) {
 }
 
 // -------------------------------------------------------------
-// ۳. برقراری اتصال به MySQL و ساخت خودکار دیتابیس
+// ۲. تنظیمات اتصال به دیتابیس MySQL در cPanel
+// -------------------------------------------------------------
+/*
+ * ==============================================================
+ * راهنمای تنظیم سریع برای کاربران cPanel / phpMyAdmin:
+ * ==============================================================
+ * ۱. در کنترل‌پنل cPanel خود به بخش "MySQL® Databases" بروید.
+ * ۲. یک دیتابیس و یک کاربر دیتابیس بسازید و تمام دسترسی‌ها (ALL PRIVILEGES) را بدهید.
+ * ۳. مقادیر ۴ خط زیر را با اطلاعات هاست خود پر کنید:
+ * ==============================================================
+ */
+$DB_HOST = getenv('DB_HOST') ?: 'localhost';
+$DB_USER = getenv('DB_USER') ?: 'root';             // نام کاربری دیتابیس در cPanel
+$DB_PASS = getenv('DB_PASS') ?: '';                 // رمز عبور دیتابیس در cPanel
+$DB_NAME = getenv('DB_NAME') ?: 'kharjyar_db';      // نام پایگاه‌داده در cPanel
+$DB_PORT = (int)(getenv('DB_PORT') ?: 3306);
+
+// -------------------------------------------------------------
+// ۳. اتصال به MySQL
 // -------------------------------------------------------------
 try {
-    // تلاش برای اتصال اولیه (برای ساخت خودکار دیتابیس در صورت امکان)
-    $mysqli = @new mysqli(DB_HOST, DB_USER, DB_PASS, '', DB_PORT);
+    // تلاش برای اتصال مستقیم به دیتابیس مشخص‌شده
+    $mysqli = @new mysqli($DB_HOST, $DB_USER, $DB_PASS, $DB_NAME, $DB_PORT);
 
     if ($mysqli->connect_errno) {
-        // تلاش مستقیم برای اتصال به دیتابیس تعیین‌شده (در هاست‌های اشتراکی با دسترسی محدود)
-        $mysqli = @new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
-        if ($mysqli->connect_errno) {
-            sendResponse('error', 'خطا در اتصال به پایگاه‌داده MySQL: ' . $mysqli->connect_error, [
-                'hint' => 'لطفاً نام کاربری، رمز عبور و نام دیتابیس را در فایل api.php بررسی کنید.'
-            ], 500);
+        // در صورت عدم وجود دیتابیس، تلاش برای اتصال عمومی و ایجاد خودکار آن
+        $mysqliInit = @new mysqli($DB_HOST, $DB_USER, $DB_PASS, '', $DB_PORT);
+        if ($mysqliInit->connect_errno) {
+            sendResponse('error', 'خطا در اتصال به پایگاه‌داده MySQL: ' . $mysqliInit->connect_error, [
+                'hint' => 'لطفاً نام کاربری، رمز عبور و نام دیتابیس را در فایل api.php بررسی کنید.',
+                'code' => $mysqliInit->connect_errno,
+            ], 200);
         }
-    } else {
-        // ساخت دیتابیس در صورت وجود دسترسی
-        $dbNameEscaped = preg_replace('/[^a-zA-Z0-9_]/', '', DB_NAME);
-        @$mysqli->query("CREATE DATABASE IF NOT EXISTS `{$dbNameEscaped}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-        if (!$mysqli->select_db(DB_NAME)) {
-            sendResponse('error', 'دیتابیس مورد نظر یافت نشد و امکان ایجاد خودکار آن وجود نداشت: ' . DB_NAME, null, 500);
+
+        $safeDb = preg_replace('/[^a-zA-Z0-9_]/', '', $DB_NAME);
+        @$mysqliInit->query("CREATE DATABASE IF NOT EXISTS `{$safeDb}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+        $mysqliInit->close();
+
+        // اتصال مجدد پس از ساخت دیتابیس
+        $mysqli = @new mysqli($DB_HOST, $DB_USER, $DB_PASS, $DB_NAME, $DB_PORT);
+        if ($mysqli->connect_errno) {
+            sendResponse('error', 'دیتابیس ساخته نشد یا دسترسی وجود ندارد: ' . $mysqli->connect_error, [
+                'hint' => 'دیتابیس را از داخل cPanel بسازید و نام آن را در api.php قرار دهید.',
+            ], 200);
         }
     }
 
-    // تنظیم کاراکترست utf8mb4 برای پشتیبانی بی‌نقص از زبان فارسی و اموجی‌ها
+    // تنظیم کاراکترست utf8mb4 برای پشتیبانی بی‌نقص از زبان فارسی، نیم‌فاصله و اموجی‌ها
     $mysqli->set_charset("utf8mb4");
 
-} catch (Exception $e) {
-    sendResponse('error', 'خطای سرور در اتصال به دیتابیس: ' . $e->getMessage(), null, 500);
+} catch (Throwable $e) {
+    sendResponse('error', 'خطای سرور در اتصال به پایگاه‌داده: ' . $e->getMessage(), null, 200);
 }
 
 // -------------------------------------------------------------
-// ۴. ساخت خودکار جداول دیتابیس (Auto Schema Migration)
+// ۴. ساخت خودکار جداول مورد نیاز برنامه (Auto Schema Generator)
 // -------------------------------------------------------------
 function initializeDatabaseTables($mysqli) {
     // جدول دسته‌بندی‌ها
@@ -137,21 +150,21 @@ function initializeDatabaseTables($mysqli) {
         INDEX `idx_history_date` (`date`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;";
 
-    $mysqli->query($sqlCategories);
-    $mysqli->query($sqlExpenses);
-    $mysqli->query($sqlPettyCash);
-    $mysqli->query($sqlPettyCashHistory);
+    @$mysqli->query($sqlCategories);
+    @$mysqli->query($sqlExpenses);
+    @$mysqli->query($sqlPettyCash);
+    @$mysqli->query($sqlPettyCashHistory);
 
     // افزودن ردیف پیش‌فرض تنخواه در صورت عدم وجود
-    $checkPetty = $mysqli->query("SELECT COUNT(*) AS total FROM `kharjyar_petty_cash` WHERE `id` = 1");
+    $checkPetty = @$mysqli->query("SELECT COUNT(*) AS total FROM `kharjyar_petty_cash` WHERE `id` = 1");
     $pettyRow = $checkPetty ? $checkPetty->fetch_assoc() : null;
     if (!$pettyRow || (int)$pettyRow['total'] === 0) {
         $now = date('Y-m-d H:i:s');
-        $mysqli->query("INSERT INTO `kharjyar_petty_cash` (`id`, `initial_balance`, `updated_at`) VALUES (1, 0, '{$now}')");
+        @$mysqli->query("INSERT INTO `kharjyar_petty_cash` (`id`, `initial_balance`, `updated_at`) VALUES (1, 0, '{$now}')");
     }
 
     // افزودن دسته‌بندی‌های پیش‌فرض در اولین اجرا
-    $checkCat = $mysqli->query("SELECT COUNT(*) AS total FROM `kharjyar_categories`");
+    $checkCat = @$mysqli->query("SELECT COUNT(*) AS total FROM `kharjyar_categories`");
     $catRow = $checkCat ? $checkCat->fetch_assoc() : null;
     if ($catRow && (int)$catRow['total'] === 0) {
         $defaults = [
@@ -165,7 +178,7 @@ function initializeDatabaseTables($mysqli) {
             ['cat_other', 'سایر', 'MoreHorizontal', '#64748B', 1],
         ];
 
-        $stmt = $mysqli->prepare("INSERT INTO `kharjyar_categories` (`id`, `name`, `icon`, `color`, `is_default`) VALUES (?, ?, ?, ?, ?)");
+        $stmt = @$mysqli->prepare("INSERT INTO `kharjyar_categories` (`id`, `name`, `icon`, `color`, `is_default`) VALUES (?, ?, ?, ?, ?)");
         if ($stmt) {
             foreach ($defaults as $item) {
                 $stmt->bind_param("ssssi", $item[0], $item[1], $item[2], $item[3], $item[4]);
@@ -176,46 +189,46 @@ function initializeDatabaseTables($mysqli) {
     }
 }
 
-// ساخت جداول
 initializeDatabaseTables($mysqli);
 
 // -------------------------------------------------------------
-// ۵. موتور درخواست‌ها و عملیات‌ها (Router & Handlers)
+// ۵. روت‌ها و مدیریت عملیات‌ها
 // -------------------------------------------------------------
-$action = isset($_GET['action']) ? trim($_GET['action']) : 'status';
+$action = isset($_GET['action']) ? trim($_GET['action']) : (isset($_POST['action']) ? trim($_POST['action']) : 'status');
 
 switch ($action) {
 
-    // بررسی وضعیت اتصال و سلامت API
+    // بررسی سلامت اتصال و آمار پایگاه‌داده
     case 'status':
     case 'ping':
-        $expensesCountRes = $mysqli->query("SELECT COUNT(*) AS total, COALESCE(SUM(`amount`), 0) AS sum_amount FROM `kharjyar_expenses`");
-        $expData = $expensesCountRes ? $expensesCountRes->fetch_assoc() : ['total' => 0, 'sum_amount' => 0];
+    case 'health':
+        $expCountRes = @$mysqli->query("SELECT COUNT(*) AS total, COALESCE(SUM(`amount`), 0) AS sum_amount FROM `kharjyar_expenses`");
+        $expData = $expCountRes ? $expCountRes->fetch_assoc() : ['total' => 0, 'sum_amount' => 0];
 
-        $catCountRes = $mysqli->query("SELECT COUNT(*) AS total FROM `kharjyar_categories`");
+        $catCountRes = @$mysqli->query("SELECT COUNT(*) AS total FROM `kharjyar_categories`");
         $catData = $catCountRes ? $catCountRes->fetch_assoc() : ['total' => 0];
 
-        $pettyRes = $mysqli->query("SELECT `initial_balance`, `updated_at` FROM `kharjyar_petty_cash` WHERE `id` = 1");
+        $pettyRes = @$mysqli->query("SELECT `initial_balance`, `updated_at` FROM `kharjyar_petty_cash` WHERE `id` = 1");
         $pettyData = $pettyRes ? $pettyRes->fetch_assoc() : ['initial_balance' => 0];
 
-        sendResponse('success', 'اتصال به پایگاه‌داده MySQL خرجیار در هاست برقرار است ✅', [
-            'database' => DB_NAME,
+        sendResponse('success', 'اتصال به پایگاه‌داده MySQL خرجیار در هاست cPanel برقرار است ✅', [
+            'database' => $DB_NAME,
             'tables' => [
-                'categories' => (int)$catData['total'],
-                'expenses' => (int)$expData['total'],
-                'expenses_sum_toman' => (int)$expData['sum_amount'],
-                'petty_cash_balance' => (int)$pettyData['initial_balance'],
+                'categories' => (int)($catData['total'] ?? 0),
+                'expenses' => (int)($expData['total'] ?? 0),
+                'expenses_sum_toman' => (int)($expData['sum_amount'] ?? 0),
+                'petty_cash_balance' => (int)($pettyData['initial_balance'] ?? 0),
             ],
             'phpVersion' => phpversion(),
-            'server' => $_SERVER['SERVER_SOFTWARE'] ?? 'cPanel / Web Server',
+            'server' => $_SERVER['SERVER_SOFTWARE'] ?? 'cPanel / Apache / Web Server',
         ]);
         break;
 
-    // دریافت تمام اطلاعات برنامه (Get All Resources)
+    // دریافت تمامی منابع و اطلاعات ذخیره شده
     case 'get_all':
         // دریافت دسته‌بندی‌ها
         $categories = [];
-        $catRes = $mysqli->query("SELECT `id`, `name`, `icon`, `color`, `is_default` FROM `kharjyar_categories` ORDER BY `is_default` DESC, `name` ASC");
+        $catRes = @$mysqli->query("SELECT `id`, `name`, `icon`, `color`, `is_default` FROM `kharjyar_categories` ORDER BY `is_default` DESC, `name` ASC");
         if ($catRes) {
             while ($row = $catRes->fetch_assoc()) {
                 $categories[] = [
@@ -230,7 +243,7 @@ switch ($action) {
 
         // دریافت هزینه‌ها
         $expenses = [];
-        $expRes = $mysqli->query("SELECT `id`, `title`, `amount`, `category_id`, `date`, `note`, `created_at`, `updated_at` FROM `kharjyar_expenses` ORDER BY `date` DESC, `created_at` DESC");
+        $expRes = @$mysqli->query("SELECT `id`, `title`, `amount`, `category_id`, `date`, `note`, `created_at`, `updated_at` FROM `kharjyar_expenses` ORDER BY `date` DESC, `created_at` DESC");
         if ($expRes) {
             while ($row = $expRes->fetch_assoc()) {
                 $expenses[] = [
@@ -239,7 +252,7 @@ switch ($action) {
                     'amount' => (int)$row['amount'],
                     'categoryId' => $row['category_id'],
                     'date' => $row['date'],
-                    'note' => $row['note'] !== null ? $row['note'] : undefined,
+                    'note' => $row['note'] !== null ? $row['note'] : null,
                     'createdAt' => date('c', strtotime($row['created_at'])),
                     'updatedAt' => date('c', strtotime($row['updated_at'])),
                 ];
@@ -249,16 +262,16 @@ switch ($action) {
         // دریافت وضعیت تنخواه
         $initialBalance = 0;
         $pettyUpdatedAt = date('c');
-        $pettyRes = $mysqli->query("SELECT `initial_balance`, `updated_at` FROM `kharjyar_petty_cash` WHERE `id` = 1");
+        $pettyRes = @$mysqli->query("SELECT `initial_balance`, `updated_at` FROM `kharjyar_petty_cash` WHERE `id` = 1");
         if ($pettyRes && $row = $pettyRes->fetch_assoc()) {
             $initialBalance = (int)$row['initial_balance'];
             $pettyUpdatedAt = date('c', strtotime($row['updated_at']));
         }
 
-        // دریافت تاریخچه تغییرات تنخواه
+        // دریافت تاریخچه تنخواه
         $history = [];
         $recharges = [];
-        $histRes = $mysqli->query("SELECT `id`, `type`, `amount`, `previous_balance`, `new_balance`, `date`, `note`, `created_at` FROM `kharjyar_petty_cash_history` ORDER BY `date` DESC, `created_at` DESC");
+        $histRes = @$mysqli->query("SELECT `id`, `type`, `amount`, `previous_balance`, `new_balance`, `date`, `note`, `created_at` FROM `kharjyar_petty_cash_history` ORDER BY `date` DESC, `created_at` DESC");
         if ($histRes) {
             while ($row = $histRes->fetch_assoc()) {
                 $historyItem = [
@@ -268,7 +281,7 @@ switch ($action) {
                     'previousBalance' => $row['previous_balance'] !== null ? (int)$row['previous_balance'] : null,
                     'newBalance' => $row['new_balance'] !== null ? (int)$row['new_balance'] : null,
                     'date' => $row['date'],
-                    'note' => $row['note'],
+                    'note' => $row['note'] !== null ? $row['note'] : null,
                     'createdAt' => date('c', strtotime($row['created_at'])),
                 ];
                 $history[] = $historyItem;
@@ -278,14 +291,14 @@ switch ($action) {
                         'id' => $row['id'],
                         'amount' => (int)$row['amount'],
                         'date' => $row['date'],
-                        'note' => $row['note'],
+                        'note' => $row['note'] !== null ? $row['note'] : null,
                         'createdAt' => date('c', strtotime($row['created_at'])),
                     ];
                 }
             }
         }
 
-        sendResponse('success', 'اطلاعات با موفقیت از پایگاه‌داده دریافت شد.', [
+        sendResponse('success', 'اطلاعات با موفقیت از دیتابیس MySQL دریافت شد.', [
             'version' => 1,
             'categories' => $categories,
             'expenses' => $expenses,
@@ -299,68 +312,71 @@ switch ($action) {
         ]);
         break;
 
-    // همگام‌سازی و بازنویسی جامع تراکنش‌محور (Transactional Bulk Sync)
+    // همگام‌سازی و ذخیره‌سازی داده‌ها با تراکنش ایمن
     case 'sync_all':
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            sendResponse('error', 'برای همگام‌سازی کلی، متد POST الزامی است.', null, 405);
+            sendResponse('error', 'برای همگام‌سازی، متد POST الزامی است.', null, 200);
         }
 
         $inputRaw = file_get_contents('php://input');
         $payload = json_decode($inputRaw, true);
 
         if (!$payload || !is_array($payload)) {
-            sendResponse('error', 'فرمت داده‌های ارسالی نامعتبر است (JSON مورد نیاز است).', null, 400);
+            sendResponse('error', 'داده‌های ارسال‌شده معتبر نیستند (فرمت JSON مورد نیاز است).', null, 200);
         }
 
-        // پشتیبانی از ساختارهای مستقیم یا بسته‌بندی شده در فیلد data
         $content = isset($payload['data']) ? $payload['data'] : $payload;
 
         $categories = isset($content['categories']) && is_array($content['categories']) ? $content['categories'] : [];
         $expenses = isset($content['expenses']) && is_array($content['expenses']) ? $content['expenses'] : [];
         $pettyCash = isset($content['pettyCash']) && is_array($content['pettyCash']) ? $content['pettyCash'] : [];
 
-        // آغاز تراکنش دیتابیس برای تضمین یکپارچگی و امنیت داده‌ها (ACID)
+        // آغاز تراکنش امن
         $mysqli->begin_transaction();
 
         try {
-            // ۱. بروزرسانی دسته‌بندی‌ها
+            // ۱. بروزرسانی دسته‌بندی‌ها در صورت وجود
             if (!empty($categories)) {
                 $mysqli->query("DELETE FROM `kharjyar_categories`");
                 $catStmt = $mysqli->prepare("INSERT INTO `kharjyar_categories` (`id`, `name`, `icon`, `color`, `is_default`) VALUES (?, ?, ?, ?, ?)");
-                foreach ($categories as $cat) {
-                    $cId = (string)($cat['id'] ?? '');
-                    $cName = (string)($cat['name'] ?? '');
-                    $cIcon = (string)($cat['icon'] ?? 'Tag');
-                    $cColor = (string)($cat['color'] ?? '#10B981');
-                    $cDef = !empty($cat['isDefault']) ? 1 : 0;
-                    if ($cId && $cName) {
-                        $catStmt->bind_param("ssssi", $cId, $cName, $cIcon, $cColor, $cDef);
-                        $catStmt->execute();
+                if ($catStmt) {
+                    foreach ($categories as $cat) {
+                        $cId = (string)($cat['id'] ?? '');
+                        $cName = (string)($cat['name'] ?? '');
+                        $cIcon = (string)($cat['icon'] ?? 'Tag');
+                        $cColor = (string)($cat['color'] ?? '#10B981');
+                        $cDef = !empty($cat['isDefault']) ? 1 : 0;
+                        if ($cId && $cName) {
+                            $catStmt->bind_param("ssssi", $cId, $cName, $cIcon, $cColor, $cDef);
+                            $catStmt->execute();
+                        }
                     }
+                    $catStmt->close();
                 }
-                $catStmt->close();
             }
 
             // ۲. بروزرسانی هزینه‌ها
             $mysqli->query("DELETE FROM `kharjyar_expenses`");
             if (!empty($expenses)) {
                 $expStmt = $mysqli->prepare("INSERT INTO `kharjyar_expenses` (`id`, `title`, `amount`, `category_id`, `date`, `note`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-                foreach ($expenses as $exp) {
-                    $eId = (string)($exp['id'] ?? '');
-                    $eTitle = (string)($exp['title'] ?? '');
-                    $eAmount = (int)($exp['amount'] ?? 0);
-                    $eCatId = (string)($exp['categoryId'] ?? 'cat_other');
-                    $eDate = (string)($exp['date'] ?? date('Y-m-d'));
-                    $eNote = isset($exp['note']) ? (string)$exp['note'] : null;
-                    $eCreatedAt = isset($exp['createdAt']) ? date('Y-m-d H:i:s', strtotime($exp['createdAt'])) : date('Y-m-d H:i:s');
-                    $eUpdatedAt = isset($exp['updatedAt']) ? date('Y-m-d H:i:s', strtotime($exp['updatedAt'])) : date('Y-m-d H:i:s');
+                if ($expStmt) {
+                    foreach ($expenses as $exp) {
+                        $eId = (string)($exp['id'] ?? '');
+                        $eTitle = (string)($exp['title'] ?? '');
+                        $eAmount = (int)($exp['amount'] ?? 0);
+                        $eCatId = (string)($exp['categoryId'] ?? 'cat_other');
+                        $eDate = (string)($exp['date'] ?? date('Y-m-d'));
+                        $eNote = isset($exp['note']) ? (string)$exp['note'] : null;
+                        $eCreatedAt = isset($exp['createdAt']) ? date('Y-m-d H:i:s', strtotime($exp['createdAt'])) : date('Y-m-d H:i:s');
+                        $eUpdatedAt = isset($exp['updatedAt']) ? date('Y-m-d H:i:s', strtotime($exp['updatedAt'])) : date('Y-m-d H:i:s');
 
-                    if ($eId && $eTitle && $eAmount > 0) {
-                        $expStmt->bind_param("ssisssss", $eId, $eTitle, $eAmount, $eCatId, $eDate, $eNote, $eCreatedAt, $eUpdatedAt);
-                        $expStmt->execute();
+                        if ($eId && $eTitle && $eAmount > 0) {
+                            $expStmt->bind_param("ssisssss", $eId, $eTitle, $eAmount, $eCatId, $eDate, $eNote, $eCreatedAt, $eUpdatedAt);
+                            $expStmt->execute();
+                        }
                     }
+                    $expStmt->close();
                 }
-                $expStmt->close();
             }
 
             // ۳. بروزرسانی تنخواه
@@ -370,7 +386,6 @@ switch ($action) {
 
             // ۴. بروزرسانی تاریخچه و شارژهای تنخواه
             $historyItems = isset($pettyCash['history']) && is_array($pettyCash['history']) ? $pettyCash['history'] : [];
-            // در صورتی که تاریخچه ارسال نشده ولی شارژها موجود باشند:
             if (empty($historyItems) && isset($pettyCash['recharges']) && is_array($pettyCash['recharges'])) {
                 foreach ($pettyCash['recharges'] as $r) {
                     $historyItems[] = [
@@ -387,26 +402,28 @@ switch ($action) {
             $mysqli->query("DELETE FROM `kharjyar_petty_cash_history`");
             if (!empty($historyItems)) {
                 $histStmt = $mysqli->prepare("INSERT INTO `kharjyar_petty_cash_history` (`id`, `type`, `amount`, `previous_balance`, `new_balance`, `date`, `note`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-                foreach ($historyItems as $h) {
-                    $hId = (string)($h['id'] ?? uniqid('pevt_'));
-                    $hType = (string)($h['type'] ?? 'recharge');
-                    $hAmount = (int)($h['amount'] ?? 0);
-                    $hPrev = isset($h['previousBalance']) ? (int)$h['previousBalance'] : null;
-                    $hNew = isset($h['newBalance']) ? (int)$h['newBalance'] : null;
-                    $hDate = (string)($h['date'] ?? date('Y-m-d'));
-                    $hNote = isset($h['note']) ? (string)$h['note'] : null;
-                    $hCreatedAt = isset($h['createdAt']) ? date('Y-m-d H:i:s', strtotime($h['createdAt'])) : date('Y-m-d H:i:s');
+                if ($histStmt) {
+                    foreach ($historyItems as $h) {
+                        $hId = (string)($h['id'] ?? uniqid('pevt_'));
+                        $hType = (string)($h['type'] ?? 'recharge');
+                        $hAmount = (int)($h['amount'] ?? 0);
+                        $hPrev = isset($h['previousBalance']) ? (int)$h['previousBalance'] : null;
+                        $hNew = isset($h['newBalance']) ? (int)$h['newBalance'] : null;
+                        $hDate = (string)($h['date'] ?? date('Y-m-d'));
+                        $hNote = isset($h['note']) ? (string)$h['note'] : null;
+                        $hCreatedAt = isset($h['createdAt']) ? date('Y-m-d H:i:s', strtotime($h['createdAt'])) : date('Y-m-d H:i:s');
 
-                    $histStmt->bind_param("ssiiisss", $hId, $hType, $hAmount, $hPrev, $hNew, $hDate, $hNote, $hCreatedAt);
-                    $histStmt->execute();
+                        $histStmt->bind_param("ssiiisss", $hId, $hType, $hAmount, $hPrev, $hNew, $hDate, $hNote, $hCreatedAt);
+                        $histStmt->execute();
+                    }
+                    $histStmt->close();
                 }
-                $histStmt->close();
             }
 
-            // ثبت قطعی تراکنش (Commit)
+            // ثبت قطعی تراکنش
             $mysqli->commit();
 
-            sendResponse('success', 'همگام‌سازی اطلاعات در پایگاه‌داده با موفقیت انجام شد ✅', [
+            sendResponse('success', 'اطلاعات با موفقیت در دیتابیس MySQL هاست ذخیره گردید ✅', [
                 'syncedExpenses' => count($expenses),
                 'syncedCategories' => count($categories),
                 'syncedHistory' => count($historyItems),
@@ -414,16 +431,15 @@ switch ($action) {
                 'syncedAt' => date('c'),
             ]);
 
-        } catch (Exception $e) {
-            // بازگردانی تغییرات در صورت بروز هرگونه خطا (Rollback)
+        } catch (Throwable $e) {
             $mysqli->rollback();
-            sendResponse('error', 'خطا در عملیات همگام‌سازی، تغییرات بازگردانده شد: ' . $e->getMessage(), null, 500);
+            sendResponse('error', 'خطا در ذخیره‌سازی داده‌ها: ' . $e->getMessage(), null, 200);
         }
         break;
 
     default:
-        sendResponse('error', 'اکشن نامعتبر است: ' . htmlspecialchars($action), [
+        sendResponse('error', 'عملیات نامعتبر است: ' . htmlspecialchars($action), [
             'available_actions' => ['status', 'get_all', 'sync_all']
-        ], 404);
+        ], 200);
         break;
 }

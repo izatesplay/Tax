@@ -22,14 +22,12 @@ import {
 import {
   fetchAllFromDatabase,
   syncAllToDatabase,
-  getSavedApiMode,
 } from './services/apiBridge';
 import { Header } from './components/Header';
 import { Navbar } from './components/Navbar';
 import { ExpenseModal } from './components/ExpenseModal';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
 import { PettyCashModal } from './components/PettyCashModal';
-import { MysqlConfigModal } from './components/MysqlConfigModal';
 import { Toast, ToastMessage } from './components/Toast';
 import { HomeView } from './views/HomeView';
 import { ExpensesView } from './views/ExpensesView';
@@ -46,7 +44,7 @@ export default function App() {
     isSyncing: false,
     lastSyncedAt: null,
     error: null,
-    mode: getSavedApiMode(),
+    mode: 'cpanel',
   });
 
   // Modal states
@@ -57,7 +55,6 @@ export default function App() {
   const [pettyCashModalMode, setPettyCashModalMode] = useState<'set_balance' | 'recharge'>('set_balance');
 
   const [expenseToDelete, setExpenseToDelete] = useState<Expense | null>(null);
-  const [isMysqlModalOpen, setIsMysqlModalOpen] = useState(false);
 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -97,14 +94,14 @@ export default function App() {
             isOnline: true,
             lastSyncedAt: nowTime,
             error: null,
-            mode: getSavedApiMode(),
+            mode: 'cpanel',
           }));
         } else {
           setSyncStatus((prev) => ({
             ...prev,
             isSyncing: false,
             error: result.message,
-            mode: getSavedApiMode(),
+            mode: 'cpanel',
           }));
         }
       } catch (err: any) {
@@ -112,7 +109,7 @@ export default function App() {
           ...prev,
           isSyncing: false,
           error: err?.message || 'خطا در ارتباط با دیتابیس MySQL',
-          mode: getSavedApiMode(),
+          mode: 'cpanel',
         }));
       } finally {
         isSyncingRef.current = false;
@@ -183,14 +180,14 @@ export default function App() {
             isOnline: true,
             lastSyncedAt: nowTime,
             error: null,
-            mode: getSavedApiMode(),
+            mode: 'cpanel',
           }));
         } else {
           setSyncStatus((prev) => ({
             ...prev,
             isSyncing: false,
             error: res.message,
-            mode: getSavedApiMode(),
+            mode: 'cpanel',
           }));
         }
       } catch (err: any) {
@@ -198,7 +195,7 @@ export default function App() {
           ...prev,
           isSyncing: false,
           error: err?.message || 'خطا در بارگذاری از دیتابیس MySQL',
-          mode: getSavedApiMode(),
+          mode: 'cpanel',
         }));
       } finally {
         isSyncingRef.current = false;
@@ -375,7 +372,6 @@ export default function App() {
         onOpenAddExpense={handleOpenAddExpense}
         syncStatus={syncStatus}
         onManualSync={() => pullFromRemote(false)}
-        onOpenDatabaseSettings={() => setIsMysqlModalOpen(true)}
       />
 
       {/* Main View Area */}
@@ -423,7 +419,6 @@ export default function App() {
             onOpenPettyCashModal={handleOpenPettyCashModal}
             syncStatus={syncStatus}
             onManualSync={() => pullFromRemote(false)}
-            onOpenDatabaseSettings={() => setIsMysqlModalOpen(true)}
           />
         )}
       </main>
@@ -458,14 +453,6 @@ export default function App() {
         expense={expenseToDelete}
         onConfirm={handleConfirmDelete}
         onCancel={() => setExpenseToDelete(null)}
-      />
-
-      {/* MySQL Database Configuration Modal */}
-      <MysqlConfigModal
-        isOpen={isMysqlModalOpen}
-        onClose={() => setIsMysqlModalOpen(false)}
-        onSuccess={(msg) => showToast(msg, 'success')}
-        onTriggerSync={() => pullFromRemote(false)}
       />
     </div>
   );

@@ -6,14 +6,12 @@ interface HeaderProps {
   onOpenAddExpense: () => void;
   syncStatus?: SyncStatus;
   onManualSync?: () => void;
-  onOpenDatabaseSettings?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onOpenAddExpense,
   syncStatus,
   onManualSync,
-  onOpenDatabaseSettings,
 }) => {
   return (
     <header className="sticky top-0 z-30 bg-[#071A14]/90 backdrop-blur-md border-b border-[#183D30]/80">
@@ -31,8 +29,8 @@ export const Header: React.FC<HeaderProps> = ({
               {syncStatus && (
                 <button
                   type="button"
-                  onClick={onOpenDatabaseSettings || onManualSync}
-                  title="وضعیت دیتابیس MySQL (کلیک جهت تنظیمات و همگام‌سازی)"
+                  onClick={onManualSync}
+                  title="وضعیت دیتابیس MySQL (کلیک جهت همگام‌سازی لحظه‌ای)"
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-all cursor-pointer ${
                     syncStatus.isSyncing
                       ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'

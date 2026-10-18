@@ -35,9 +35,7 @@ import { formatJalaliDateShort, getTehranToday } from '../utils/jalali';
 import {
   getSavedApiEndpoint,
   saveApiEndpoint,
-  getSavedApiMode,
-  saveApiMode,
-  ApiMode,
+  DEFAULT_API_ENDPOINT,
   checkApiStatus,
   syncAllToDatabase,
   fetchAllFromDatabase,
@@ -55,7 +53,6 @@ interface SettingsViewProps {
   onOpenPettyCashModal: (mode: 'set_balance' | 'recharge') => void;
   syncStatus?: SyncStatus;
   onManualSync?: () => void;
-  onOpenDatabaseSettings?: () => void;
 }
 
 const CATEGORY_COLORS = [
@@ -81,7 +78,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onOpenPettyCashModal,
   syncStatus,
   onManualSync,
-  onOpenDatabaseSettings,
 }) => {
   const pettySummary = calculatePettyCashSummary(data.pettyCash, data.expenses);
 
@@ -128,26 +124,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     onShowToast('موجودی تنخواه بازنشانی و صفر شد', 'info');
   };
 
-  // Database & Sync state
-  const [apiMode, setApiMode] = useState<ApiMode>(() => getSavedApiMode());
-  const [apiEndpoint, setApiEndpoint] = useState<string>(() => getSavedApiEndpoint() || '');
+  // Database & Sync state (via api.php)
+  const [apiEndpoint, setApiEndpoint] = useState<string>(() => getSavedApiEndpoint() || DEFAULT_API_ENDPOINT);
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [isSyncingApi, setIsSyncingApi] = useState(false);
   const [isPullingApi, setIsPullingApi] = useState(false);
   const [apiStatusResult, setApiStatusResult] = useState<ApiStatusResult | null>(null);
   const [showCpanelGuide, setShowCpanelGuide] = useState(false);
-
-  const handleModeChange = (mode: ApiMode) => {
-    setApiMode(mode);
-    saveApiMode(mode);
-    setApiStatusResult(null);
-    onShowToast(
-      mode === 'cloud'
-        ? 'حالت دیتابیس ابری مرکزی سرور فعال شد ☁️'
-        : 'حالت اتصال به هاست شخصی cPanel فعال شد 🌐',
-      'info'
-    );
-  };
 
   const handleEndpointChange = (val: string) => {
     setApiEndpoint(val);
@@ -159,7 +142,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setIsTestingApi(true);
     setApiStatusResult(null);
     try {
-      const result = await checkApiStatus(apiMode === 'cpanel' ? apiEndpoint : undefined, apiMode);
+      const result = await checkApiStatus(apiEndpoint);
       setApiStatusResult(result);
       if (result.ok) {
         onShowToast(result.message, 'success');
@@ -174,11 +157,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handlePushSync = async () => {
     setIsSyncingApi(true);
     try {
-      const result = await syncAllToDatabase(apiMode === 'cpanel' ? apiEndpoint : undefined, data, apiMode);
+      const result = await syncAllToDatabase(apiEndpoint, data);
       if (result.ok) {
         onShowToast(result.message, 'success');
-        const statusRes = await checkApiStatus(apiMode === 'cpanel' ? apiEndpoint : undefined, apiMode);
+        const statusRes = await checkApiStatus(apiEndpoint);
         setApiStatusResult(statusRes);
+        if (onManualSync) onManualSync();
       } else {
         onShowToast(result.message, 'error');
       }
@@ -193,10 +177,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
     setIsPullingApi(true);
     try {
-      const result = await fetchAllFromDatabase(apiMode === 'cpanel' ? apiEndpoint : undefined, apiMode);
+      const result = await fetchAllFromDatabase(apiEndpoint);
       if (result.ok && result.data) {
         onUpdateAllData(result.data);
         onShowToast('اطلاعات با موفقیت از دیتابیس دریافت و جایگزین شد ✅', 'success');
+        const statusRes = await checkApiStatus(apiEndpoint);
+        setApiStatusResult(statusRes);
       } else {
         onShowToast(result.message, 'error');
       }
@@ -646,6 +632,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </div>
 
       {/* Database & Cloud Synchronization Section */}
+      {/* Database & MySQL API Bridge Section */}
       <div className="bg-[#102A21] border border-[#183D30] rounded-3xl p-5 shadow-lg space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -654,10 +641,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-[#F4F7F5]">
-                اتصال و همگام‌سازی لحظه‌ای پایگاه‌داده
+                پل پایگاه‌داده MySQL و cPanel (api.php)
               </h3>
               <p className="text-[11px] text-[#A8B8AF]">
-                ذخیرهٔ خودکار و پایدار داده‌ها جهت دسترسی همزمان از چند دستگاه و حساب کاربری
+                تمامی عملیات بکند و ذخیرهٔ لحظه‌ای اطلاعات روی MySQL از طریق فایل خودکفای api.php انجام می‌شود.
               </p>
             </div>
           </div>
@@ -678,151 +665,82 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
         </div>
 
-        {/* Mode Selector */}
-        <div className="p-1 bg-[#071A14] border border-[#183D30] rounded-2xl flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => handleModeChange('cloud')}
-            className={`flex-1 min-h-[38px] px-3 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-              apiMode === 'cloud'
-                ? 'bg-[#45D69B] text-[#071A14] shadow-sm'
-                : 'text-[#A8B8AF] hover:text-[#F4F7F5]'
-            }`}
-          >
-            <Server size={14} />
-            <span>دیتابیس ابری مرکزی (پیش‌فرض)</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => handleModeChange('cpanel')}
-            className={`flex-1 min-h-[38px] px-3 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-              apiMode === 'cpanel'
-                ? 'bg-[#45D69B] text-[#071A14] shadow-sm'
-                : 'text-[#A8B8AF] hover:text-[#F4F7F5]'
-            }`}
-          >
-            <FileCode size={14} />
-            <span>پل MySQL در cPanel (api.php)</span>
-          </button>
+        {/* Info Box */}
+        <div className="bg-[#071A14]/70 p-3.5 border border-[#183D30] rounded-2xl text-xs space-y-1.5 text-[#A8B8AF]">
+          <div className="flex items-center gap-2 text-[#45D69B] font-semibold">
+            <Check size={16} />
+            <span>همگام‌سازی لحظه‌ای با دیتابیس MySQL فعال است:</span>
+          </div>
+          <p className="leading-relaxed">
+            با هر بار ثبت، ویرایش، حذف هزینه یا تغییر تنخواه، اطلاعات بلافاصله روی پایگاه‌داده ذخیره می‌شوند تا از هر دستگاه و اکانتی باز کنید اطلاعات موجود را ببینید.
+          </p>
         </div>
 
-        {apiMode === 'cloud' ? (
-          <div className="space-y-3.5 bg-[#071A14]/60 p-4 border border-[#183D30] rounded-2xl text-xs">
-            <div className="flex items-start gap-2.5 text-[#A8B8AF] leading-relaxed">
-              <Check size={16} className="text-[#45D69B] shrink-0 mt-0.5" />
-              <div>
-                <strong className="text-[#F4F7F5] block mb-0.5">همگام‌سازی ابری خودکار و بلادرنگ فعال است:</strong>
-                تمام هزینه‌ها، موجودی تنخواه و دسته‌بندی‌های شما به صورت خودکار و امن روی سرور پایگاه‌داده ذخیره می‌شوند. هر زمان با دیوایس یا اکانت دیگری وارد سایت شوید، اطلاعات بلافاصله بارگذاری خواهند شد.
-              </div>
-            </div>
-
-            <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#183D30]">
-              <span className="text-[#A8B8AF] text-[11px]">
-                بررسی خودکار هر چند ثانیه یک‌بار و هنگام بازگشت به تب انجام می‌شود.
-              </span>
-
-              <div className="flex items-center gap-2">
-                {onOpenDatabaseSettings && (
-                  <button
-                    type="button"
-                    onClick={onOpenDatabaseSettings}
-                    className="min-h-[38px] px-3.5 bg-[#102A21] hover:bg-[#183D30] border border-[#45D69B]/40 text-[#45D69B] font-semibold text-xs rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
-                  >
-                    <Server size={13} />
-                    <span>پیکربندی سرور MySQL</span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={handleTestApi}
-                  disabled={isTestingApi}
-                  className="min-h-[38px] px-3.5 bg-[#183D30] hover:bg-[#224e3e] text-[#F4F7F5] font-semibold text-xs rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
-                >
-                  <RefreshCw size={13} className={isTestingApi ? 'animate-spin text-[#45D69B]' : ''} />
-                  <span>{isTestingApi ? 'در حال بررسی...' : 'بررسی وضعیت سرور'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    handlePushSync();
-                    if (onManualSync) onManualSync();
-                  }}
-                  disabled={isSyncingApi}
-                  className="min-h-[38px] px-3.5 bg-[#45D69B] hover:bg-[#3ec48d] text-[#071A14] font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
-                >
-                  <Upload size={14} />
-                  <span>{isSyncingApi ? 'در حال همگام‌سازی...' : 'همگام‌سازی فوری'}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4 animate-in fade-in">
-            {/* cPanel Endpoint Input */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-xs font-medium text-[#A8B8AF]">
-                  آدرس کامل فایل api.php روی هاست:
-                </label>
-                <button
-                  type="button"
-                  onClick={downloadApiPhpScript}
-                  className="text-xs text-[#45D69B] hover:underline flex items-center gap-1 cursor-pointer"
-                >
-                  <FileCode size={13} />
-                  <span>دانلود فایل api.php</span>
-                </button>
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="url"
-                  value={apiEndpoint}
-                  onChange={(e) => handleEndpointChange(e.target.value)}
-                  placeholder="مثلاً: https://your-domain.ir/api.php"
-                  className="flex-1 min-h-[44px] px-3.5 bg-[#071A14] border border-[#183D30] focus:border-[#45D69B] rounded-xl text-xs sm:text-sm text-[#F4F7F5] outline-none tabular-nums"
-                  dir="ltr"
-                />
-                <button
-                  type="button"
-                  onClick={handleTestApi}
-                  disabled={isTestingApi}
-                  className="min-h-[44px] px-4 bg-[#183D30] hover:bg-[#224e3e] disabled:opacity-50 text-[#F4F7F5] font-semibold text-xs rounded-xl transition-colors cursor-pointer shrink-0 flex items-center gap-1.5"
-                >
-                  <RefreshCw size={14} className={isTestingApi ? 'animate-spin text-[#45D69B]' : ''} />
-                  <span>{isTestingApi ? 'در حال تست...' : 'تست اتصال'}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Sync Action Buttons */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+        {/* Endpoint Input and Download Button */}
+        <div className="space-y-4 pt-1">
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium text-[#A8B8AF]">
+                آدرس فایل api.php (پیش‌فرض روی دامنه جاری یا هاست شما):
+              </label>
               <button
                 type="button"
-                onClick={handlePushSync}
-                disabled={isSyncingApi}
-                className="min-h-[44px] px-4 bg-[#45D69B] hover:bg-[#3ec48d] disabled:opacity-50 text-[#071A14] font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+                onClick={downloadApiPhpScript}
+                className="text-xs text-[#45D69B] hover:underline flex items-center gap-1 cursor-pointer font-medium"
               >
-                <Upload size={16} />
-                <span>{isSyncingApi ? 'در حال ارسال و همگام‌سازی...' : 'ارسال اطلاعات محلی به دیتابیس (Push Sync)'}</span>
+                <FileCode size={13} />
+                <span>دانلود فایل آمادهٔ api.php</span>
               </button>
-
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={apiEndpoint}
+                onChange={(e) => handleEndpointChange(e.target.value)}
+                placeholder="/api.php یا https://your-domain.ir/api.php"
+                className="flex-1 min-h-[44px] px-3.5 bg-[#071A14] border border-[#183D30] focus:border-[#45D69B] rounded-xl text-xs sm:text-sm text-[#F4F7F5] outline-none tabular-nums"
+                dir="ltr"
+              />
               <button
                 type="button"
-                onClick={handlePullSync}
-                disabled={isPullingApi}
-                className="min-h-[44px] px-4 bg-[#183D30] hover:bg-[#204a3c] disabled:opacity-50 text-[#F4F7F5] font-semibold text-xs rounded-xl flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                onClick={handleTestApi}
+                disabled={isTestingApi}
+                className="min-h-[44px] px-4 bg-[#183D30] hover:bg-[#224e3e] disabled:opacity-50 text-[#F4F7F5] font-semibold text-xs rounded-xl transition-colors cursor-pointer shrink-0 flex items-center gap-1.5"
               >
-                <Download size={16} className="text-[#45D69B]" />
-                <span>{isPullingApi ? 'در حال دریافت...' : 'دریافت اطلاعات از سرور MySQL (Pull Sync)'}</span>
+                <RefreshCw size={14} className={isTestingApi ? 'animate-spin text-[#45D69B]' : ''} />
+                <span>{isTestingApi ? 'در حال بررسی...' : 'بررسی اتصال'}</span>
               </button>
             </div>
           </div>
-        )}
+
+          {/* Sync Action Buttons */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={handlePushSync}
+              disabled={isSyncingApi}
+              className="min-h-[44px] px-4 bg-[#45D69B] hover:bg-[#3ec48d] disabled:opacity-50 text-[#071A14] font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+            >
+              <Upload size={16} />
+              <span>{isSyncingApi ? 'در حال ارسال و ذخیره...' : 'ذخیرهٔ فوری روی دیتابیس (Push Sync)'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePullSync}
+              disabled={isPullingApi}
+              className="min-h-[44px] px-4 bg-[#183D30] hover:bg-[#204a3c] disabled:opacity-50 text-[#F4F7F5] font-semibold text-xs rounded-xl flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            >
+              <Download size={16} className="text-[#45D69B]" />
+              <span>{isPullingApi ? 'در حال دریافت...' : 'دریافت مجدد از دیتابیس (Pull Sync)'}</span>
+            </button>
+          </div>
+        </div>
 
         {/* Status result badge */}
         {apiStatusResult && (
           <div
-            className={`p-3 rounded-2xl text-xs leading-relaxed border ${
+            className={`p-3.5 rounded-2xl text-xs leading-relaxed border ${
               apiStatusResult.ok
                 ? 'bg-[#071A14] border-[#45D69B]/40 text-[#45D69B]'
                 : 'bg-red-500/10 border-red-500/30 text-red-300'
@@ -850,7 +768,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   دسته‌ها در سرور: <span className="font-bold text-[#F4F7F5]">{toPersianDigits(apiStatusResult.data.tables?.categories ?? apiStatusResult.data.categoriesCount ?? 0)}</span>
                 </div>
                 <div>
-                  زمان سرور: <span className="font-bold text-[#F4F7F5]">{apiStatusResult.data.phpVersion ? `PHP ${apiStatusResult.data.phpVersion}` : 'Cloud Node.js'}</span>
+                  موجودی تنخواه: <span className="font-bold text-[#F4F7F5]">{formatToman(apiStatusResult.data.tables?.petty_cash_balance ?? apiStatusResult.data.pettyCashBalance ?? 0)}</span>
                 </div>
               </div>
             )}
@@ -866,7 +784,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           >
             <div className="flex items-center gap-1.5 font-medium">
               <Info size={14} className="text-[#45D69B]" />
-              <span>راهنمای راه‌اندازی سریع در هاست cPanel و phpMyAdmin</span>
+              <span>راهنمای راه‌اندازی فایل api.php در هاست cPanel و phpMyAdmin</span>
             </div>
             <ChevronDown
               size={14}
@@ -876,19 +794,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {showCpanelGuide && (
             <div className="mt-3 p-3.5 bg-[#071A14] border border-[#183D30] rounded-2xl text-xs space-y-2 text-[#A8B8AF] leading-relaxed animate-in fade-in">
-              <p className="text-[#F4F7F5] font-semibold">مراحل نصب بدون نیاز به نوشتن کوئری SQL:</p>
+              <p className="text-[#F4F7F5] font-semibold">مراحل نصب بدون نیاز به درگیر شدن با تنظیمات درون سایت یا نوشتن کوئری SQL:</p>
               <ol className="list-decimal list-inside space-y-1.5 pr-1">
                 <li>
-                  روی دکمهٔ <strong className="text-[#45D69B]">«دانلود اسکریپت api.php»</strong> در بالا کلیک کنید.
+                  روی دکمهٔ <strong className="text-[#45D69B]">«دانلود فایل آمادهٔ api.php»</strong> در بالا کلیک کنید.
                 </li>
                 <li>
-                  وارد cPanel شوید و در بخش <strong className="text-[#F4F7F5]">File Manager</strong> فایل <code className="text-[#45D69B]">api.php</code> را در پوشهٔ سایت (مثلاً <code className="text-[#45D69B]">public_html</code>) آپلود کنید.
+                  وارد cPanel شوید و در بخش <strong className="text-[#F4F7F5]">File Manager</strong> فایل <code className="text-[#45D69B]">api.php</code> را در پوشهٔ ریشه سایت خود (مثلاً <code className="text-[#45D69B]">public_html</code>) قرار دهید.
                 </li>
                 <li>
-                  در cPanel وارد بخش <strong className="text-[#F4F7F5]">MySQL® Database Wizard</strong> شوید؛ یک دیتابیس و یک نام کاربری بسازید، دسترسی‌ها را تیک بزنید، و مقادیر <code className="text-[#45D69B]">DB_USER</code>، <code className="text-[#45D69B]">DB_PASS</code> و <code className="text-[#45D69B]">DB_NAME</code> را در سطرهای اولیه فایل <code className="text-[#45D69B]">api.php</code> وارد کنید.
+                  فایل <code className="text-[#45D69B]">api.php</code> را باز کرده و در خطوط ۴۰ تا ۴۳، مشخصات اتصال دیتابیس خود را وارد کنید (<code className="text-[#45D69B]">$DB_USER</code>، <code className="text-[#45D69B]">$DB_PASS</code>، <code className="text-[#45D69B]">$DB_NAME</code>).
                 </li>
                 <li>
-                  آدرس اینترنتی فایل را در کادر بالا بنویسید (مثلاً: <code className="text-[#45D69B]">https://yoursite.com/api.php</code>) و دکمهٔ «تست اتصال» را بزنید. تمام جداول به‌طور خودکار ساخته می‌شوند!
+                  تمام جداول پایگاه‌داده به صورت خودکار توسط همین فایل ساخته می‌شوند و از همین لحظه برنامه به صورت لحظه‌ای اطلاعات را ذخیره و بارگذاری می‌کند!
                 </li>
               </ol>
             </div>
