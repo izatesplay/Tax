@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Category,
   Expense,
   KharjYarStorageData,
   TabType,
+  SyncStatus,
+  PettyCashConfig,
 } from './types';
 import {
   loadStorageData,
@@ -17,6 +19,11 @@ import {
   DEFAULT_CATEGORIES,
   DEFAULT_PETTY_CASH,
 } from './services/storage';
+import {
+  fetchAllFromDatabase,
+  syncAllToDatabase,
+  getSavedApiMode,
+} from './services/apiBridge';
 import { Header } from './components/Header';
 import { Navbar } from './components/Navbar';
 import { ExpenseModal } from './components/ExpenseModal';
@@ -27,11 +34,19 @@ import { HomeView } from './views/HomeView';
 import { ExpensesView } from './views/ExpensesView';
 import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
-import { PettyCashConfig } from './types';
 
 export default function App() {
   const [data, setData] = useState<KharjYarStorageData>(() => loadStorageData());
   const [activeTab, setActiveTab] = useState<TabType>('home');
+
+  // Cloud & Database Sync Status
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
+    isOnline: navigator.onLine,
+    isSyncing: false,
+    lastSyncedAt: null,
+    error: null,
+    mode: getSavedApiMode(),
+  });
 
   // Expense modal state
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
@@ -47,6 +62,10 @@ export default function App() {
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
+  const isSyncingRef = useRef(false);
+  const latestDataRef = useRef(data);
+  latestDataRef.current = data;
+
   const showToast = useCallback(
     (message: string, type: 'success' | 'error' | 'info' = 'success') => {
       const id = Date.now().toString() + Math.random().toString();
@@ -59,17 +78,177 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Persist data whenever it changes
+  // Sync to database backend
+  const pushToRemote = useCallback(
+    async (payload: KharjYarStorageData) => {
+      isSyncingRef.current = true;
+      setSyncStatus((prev) => ({ ...prev, isSyncing: true, error: null }));
+
+      try {
+        const result = await syncAllToDatabase(undefined, payload);
+        if (result.ok) {
+          const nowTime = new Date().toLocaleTimeString('fa-IR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+          setSyncStatus((prev) => ({
+            ...prev,
+            isSyncing: false,
+            isOnline: true,
+            lastSyncedAt: nowTime,
+            error: null,
+            mode: getSavedApiMode(),
+          }));
+        } else {
+          setSyncStatus((prev) => ({
+            ...prev,
+            isSyncing: false,
+            error: result.message,
+            mode: getSavedApiMode(),
+          }));
+        }
+      } catch (err: any) {
+        setSyncStatus((prev) => ({
+          ...prev,
+          isSyncing: false,
+          error: err?.message || 'خطا در ارتباط با دیتابیس',
+          mode: getSavedApiMode(),
+        }));
+      } finally {
+        isSyncingRef.current = false;
+      }
+    },
+    []
+  );
+
+  // Persist data locally and automatically sync to remote database
   const updateData = useCallback(
-    (newData: KharjYarStorageData) => {
+    (newData: KharjYarStorageData, shouldPushToRemote = true) => {
       setData(newData);
-      const res = saveStorageData(newData);
-      if (!res.success) {
-        showToast(res.error || 'خطا در ذخیره‌سازی اطلاعات!', 'error');
+      saveStorageData(newData);
+
+      if (shouldPushToRemote) {
+        pushToRemote(newData);
+      }
+    },
+    [pushToRemote]
+  );
+
+  // Fetch latest data from database
+  const pullFromRemote = useCallback(
+    async (quiet = false) => {
+      if (isSyncingRef.current) return;
+      isSyncingRef.current = true;
+      setSyncStatus((prev) => ({ ...prev, isSyncing: true }));
+
+      try {
+        const res = await fetchAllFromDatabase();
+        if (res.ok && res.data) {
+          const remoteData = res.data;
+          const currentLocal = latestDataRef.current;
+
+          // If remote has expenses or remote was updated more recently
+          const remoteExpenses = Array.isArray(remoteData.expenses) ? remoteData.expenses : [];
+          const localExpenses = Array.isArray(currentLocal.expenses) ? currentLocal.expenses : [];
+
+          // Case 1: Remote has data and local is empty -> adopt remote
+          if (remoteExpenses.length > 0 && localExpenses.length === 0) {
+            setData(remoteData);
+            saveStorageData(remoteData);
+            if (!quiet) {
+              showToast('اطلاعات با موفقیت از دیتابیس همگام‌سازی شد ☁️', 'info');
+            }
+          }
+          // Case 2: Local has data but remote is empty (first migration) -> push to remote
+          else if (localExpenses.length > 0 && remoteExpenses.length === 0) {
+            await syncAllToDatabase(undefined, currentLocal);
+          }
+          // Case 3: Compare updatedAt timestamps
+          else {
+            const remoteTime = remoteData.updatedAt ? new Date(remoteData.updatedAt).getTime() : 0;
+            const localTime = currentLocal.updatedAt ? new Date(currentLocal.updatedAt).getTime() : 0;
+
+            if (remoteTime > localTime) {
+              setData(remoteData);
+              saveStorageData(remoteData);
+            }
+          }
+
+          const nowTime = new Date().toLocaleTimeString('fa-IR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+          setSyncStatus((prev) => ({
+            ...prev,
+            isSyncing: false,
+            isOnline: true,
+            lastSyncedAt: nowTime,
+            error: null,
+            mode: getSavedApiMode(),
+          }));
+        } else {
+          setSyncStatus((prev) => ({
+            ...prev,
+            isSyncing: false,
+            error: res.message,
+            mode: getSavedApiMode(),
+          }));
+        }
+      } catch (err: any) {
+        setSyncStatus((prev) => ({
+          ...prev,
+          isSyncing: false,
+          error: err?.message || 'خطا در بارگذاری از دیتابیس',
+          mode: getSavedApiMode(),
+        }));
+      } finally {
+        isSyncingRef.current = false;
       }
     },
     [showToast]
   );
+
+  // Initial pull on mount & periodic polling for multi-device sync
+  useEffect(() => {
+    // Initial fetch from database
+    pullFromRemote(true);
+
+    // Online/offline handlers
+    const handleOnline = () => {
+      setSyncStatus((prev) => ({ ...prev, isOnline: true }));
+      pullFromRemote(true);
+    };
+    const handleOffline = () => {
+      setSyncStatus((prev) => ({ ...prev, isOnline: false }));
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Background sync on tab focus or visibility change (e.g. mobile unlock)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        pullFromRemote(true);
+      }
+    };
+    window.addEventListener('focus', handleVisibilityChange);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Periodic polling every 12 seconds so all devices stay updated in real-time
+    const intervalId = setInterval(() => {
+      if (document.visibilityState === 'visible' && !isSyncingRef.current) {
+        pullFromRemote(true);
+      }
+    }, 12000);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('focus', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(intervalId);
+    };
+  }, [pullFromRemote]);
 
   // Open add modal
   const handleOpenAddExpense = () => {
@@ -112,6 +291,7 @@ export default function App() {
       updateData({
         ...data,
         expenses: updatedExpenses,
+        updatedAt: nowIso,
       });
 
       setIsExpenseModalOpen(false);
@@ -133,6 +313,7 @@ export default function App() {
       updateData({
         ...data,
         expenses: [newExpense, ...data.expenses],
+        updatedAt: nowIso,
       });
 
       setIsExpenseModalOpen(false);
@@ -152,6 +333,7 @@ export default function App() {
     updateData({
       ...data,
       expenses: remaining,
+      updatedAt: new Date().toISOString(),
     });
     setExpenseToDelete(null);
     showToast('هزینه با موفقیت حذف شد 🗑️', 'success');
@@ -167,6 +349,7 @@ export default function App() {
     updateData({
       ...data,
       pettyCash: updatedConfig,
+      updatedAt: new Date().toISOString(),
     });
     showToast('موجودی تنخواه با موفقیت به‌روزرسانی شد ✅', 'success');
   };
@@ -189,8 +372,12 @@ export default function App() {
       {/* Toast notifications */}
       <Toast toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Top Header */}
-      <Header onOpenAddExpense={handleOpenAddExpense} />
+      {/* Top Header with live sync status */}
+      <Header
+        onOpenAddExpense={handleOpenAddExpense}
+        syncStatus={syncStatus}
+        onManualSync={() => pullFromRemote(false)}
+      />
 
       {/* Main View Area */}
       <main className="flex-1 w-full max-w-2xl mx-auto px-4 pt-4 sm:pt-6">
@@ -229,12 +416,14 @@ export default function App() {
           <SettingsView
             data={data}
             onUpdateCategories={(newCats) =>
-              updateData({ ...data, categories: newCats })
+              updateData({ ...data, categories: newCats, updatedAt: new Date().toISOString() })
             }
             onUpdateAllData={(newData) => updateData(newData)}
             onClearAllData={handleClearAllData}
             onShowToast={showToast}
             onOpenPettyCashModal={handleOpenPettyCashModal}
+            syncStatus={syncStatus}
+            onManualSync={() => pullFromRemote(false)}
           />
         )}
       </main>

@@ -72,3 +72,21 @@ export interface JalaliDate {
   jm: number; // Jalali month (1-12)
   jd: number; // Jalali day (1-31)
 }
+
+export type DatabaseMode = 'cloud' | 'cpanel';
+
+export interface DatabaseSettings {
+  mode: DatabaseMode;
+  cpanelApiUrl: string;
+  autoSync: boolean;
+  lastSyncedAt?: string;
+}
+
+export interface SyncStatus {
+  isOnline: boolean;
+  isSyncing: boolean;
+  lastSyncedAt: string | null;
+  error: string | null;
+  mode: DatabaseMode;
+}
+
