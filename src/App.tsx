@@ -204,14 +204,13 @@ export default function App() {
     [showToast]
   );
 
-  // Initial pull on mount & fast real-time polling every 5 seconds
+  // Initial data load on mount (no automatic recurring polling so user input never resets while typing)
   useEffect(() => {
-    // Read from MySQL database right on startup
+    // Read from MySQL database once on startup
     pullFromRemote(true);
 
     const handleOnline = () => {
       setSyncStatus((prev) => ({ ...prev, isOnline: true }));
-      pullFromRemote(true);
     };
     const handleOffline = () => {
       setSyncStatus((prev) => ({ ...prev, isOnline: false }));
@@ -220,28 +219,9 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Instant sync when returning to the tab or unlocking phone screen
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        pullFromRemote(true);
-      }
-    };
-    window.addEventListener('focus', handleVisibilityChange);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    // Fast polling every 5 seconds so multi-device updates appear in real-time
-    const intervalId = setInterval(() => {
-      if (document.visibilityState === 'visible' && !isSyncingRef.current) {
-        pullFromRemote(true);
-      }
-    }, 5000);
-
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
-      window.removeEventListener('focus', handleVisibilityChange);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      clearInterval(intervalId);
     };
   }, [pullFromRemote]);
 

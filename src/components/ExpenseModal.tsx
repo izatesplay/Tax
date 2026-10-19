@@ -42,8 +42,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
 
   const isEditing = Boolean(initialExpense);
 
+  const prevIsOpenRef = React.useRef(false);
+  const prevExpenseIdRef = React.useRef<string | null>(null);
+
   useEffect(() => {
-    if (isOpen) {
+    const isOpening = !prevIsOpenRef.current && isOpen;
+    const isDifferentExpense = (initialExpense?.id || null) !== prevExpenseIdRef.current;
+
+    if (isOpen && (isOpening || isDifferentExpense)) {
       setErrorMsg('');
       setIsSubmitting(false);
       if (initialExpense) {
@@ -61,6 +67,9 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         setNote('');
       }
     }
+
+    prevIsOpenRef.current = isOpen;
+    prevExpenseIdRef.current = initialExpense?.id || null;
   }, [isOpen, initialExpense, categories]);
 
   if (!isOpen) return null;

@@ -38,8 +38,11 @@ export const PettyCashModal: React.FC<PettyCashModalProps> = ({
   const [errorMsg, setErrorMsg] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const prevIsOpenRef = React.useRef(false);
+
   useEffect(() => {
-    if (isOpen) {
+    const isOpening = !prevIsOpenRef.current && isOpen;
+    if (isOpen && isOpening) {
       setMode(defaultMode);
       setErrorMsg('');
       setIsSubmitting(false);
@@ -48,6 +51,7 @@ export const PettyCashModal: React.FC<PettyCashModalProps> = ({
       setRechargeDate(getTehranToday().iso);
       setRechargeNote('');
     }
+    prevIsOpenRef.current = isOpen;
   }, [isOpen, defaultMode, pettyCash]);
 
   if (!isOpen) return null;
