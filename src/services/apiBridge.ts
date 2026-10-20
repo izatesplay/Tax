@@ -1,4 +1,5 @@
 import { KharjYarStorageData } from '../types';
+import { normalizePettyCash } from './storage';
 
 const API_ENDPOINT_STORAGE_KEY = 'kharjyar_mysql_api_url';
 export const DEFAULT_API_ENDPOINT = '/api.php';
@@ -34,11 +35,14 @@ export function saveApiEndpoint(url: string): void {
 function buildActionUrl(baseUrl: string, action: string): string {
   const clean = baseUrl.trim() || DEFAULT_API_ENDPOINT;
   const sep = clean.includes('?') ? '&' : '?';
-  return `${clean}${sep}action=${action}`;
+  return `${clean}${sep}action=${action}&_t=${Date.now()}`;
 }
 
 async function safeFetchJson(url: string, options: RequestInit = {}): Promise<{ ok: boolean; status: number; json: any; rawText: string }> {
-  const res = await fetch(url, options);
+  const res = await fetch(url, {
+    ...options,
+    cache: 'no-store',
+  });
   const rawText = await res.text();
 
   let json: any = null;
@@ -75,8 +79,11 @@ export async function checkApiStatus(endpointUrl?: string): Promise<ApiStatusRes
 
     const result = await safeFetchJson(targetUrl, {
       method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-cache',
+      headers: {
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -125,6 +132,16 @@ export async function syncAllToDatabase(
   const base = endpointUrl !== undefined ? endpointUrl : getSavedApiEndpoint();
   const targetUrl = buildActionUrl(base, 'sync_all');
 
+  const normalizedPettyCash = normalizePettyCash(data.pettyCash);
+  const bodyStr = JSON.stringify({
+    data: {
+      expenses: Array.isArray(data.expenses) ? data.expenses : [],
+      categories: Array.isArray(data.categories) ? data.categories : [],
+      pettyCash: normalizedPettyCash,
+      updatedAt: data.updatedAt || new Date().toISOString(),
+    },
+  });
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 12000);
@@ -134,15 +151,12 @@ export async function syncAllToDatabase(
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
         Accept: 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
       },
-      body: JSON.stringify({
-        data: {
-          expenses: data.expenses,
-          categories: data.categories,
-          pettyCash: data.pettyCash,
-          updatedAt: data.updatedAt,
-        },
-      }),
+      body: bodyStr,
+      // Use keepalive when payload < 60KB so page refresh doesn't cancel an in-flight delete/save
+      keepalive: bodyStr.length < 60000,
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -192,8 +206,11 @@ export async function fetchAllFromDatabase(
 
     const result = await safeFetchJson(targetUrl, {
       method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-cache',
+      headers: {
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -208,10 +225,17 @@ export async function fetchAllFromDatabase(
     const payload = result.json.data || result.json;
 
     if (result.json.status === 'success' && payload && Array.isArray(payload.expenses)) {
+      const normalizedData: KharjYarStorageData = {
+        ...payload,
+        expenses: payload.expenses,
+        categories: Array.isArray(payload.categories) ? payload.categories : [],
+        pettyCash: normalizePettyCash(payload.pettyCash),
+        updatedAt: payload.updatedAt || new Date().toISOString(),
+      };
       return {
         ok: true,
         message: result.json.message || 'داده‌ها با موفقیت از دیتابیس MySQL دریافت شدند.',
-        data: payload as KharjYarStorageData,
+        data: normalizedData,
       };
     } else {
       return {

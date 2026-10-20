@@ -18,6 +18,7 @@ import {
   generateUniqueId,
   DEFAULT_CATEGORIES,
   DEFAULT_PETTY_CASH,
+  normalizePettyCash,
 } from './services/storage';
 import {
   fetchAllFromDatabase,
@@ -33,6 +34,8 @@ import { HomeView } from './views/HomeView';
 import { ExpensesView } from './views/ExpensesView';
 import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
+
+const PENDING_SYNC_STORAGE_KEY = 'kharjyar_pending_sync';
 
 export default function App() {
   const [data, setData] = useState<KharjYarStorageData>(() => loadStorageData());
@@ -59,7 +62,9 @@ export default function App() {
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  const isSyncingRef = useRef(false);
+  const isPushingRef = useRef(false);
+  const pendingPushPayloadRef = useRef<KharjYarStorageData | null>(null);
+  const mutationVersionRef = useRef(0);
   const latestDataRef = useRef(data);
   latestDataRef.current = data;
 
@@ -75,34 +80,49 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Save changes to database immediately (Real-time push)
+  // Save changes to database immediately (Serialized queue so rapid deletes never overlap)
   const pushToRemote = useCallback(
     async (payload: KharjYarStorageData) => {
-      isSyncingRef.current = true;
+      pendingPushPayloadRef.current = payload;
+      if (isPushingRef.current) {
+        return;
+      }
+
+      isPushingRef.current = true;
       setSyncStatus((prev) => ({ ...prev, isSyncing: true, error: null }));
 
       try {
-        const result = await syncAllToDatabase(undefined, payload);
-        if (result.ok) {
-          const nowTime = new Date().toLocaleTimeString('fa-IR', {
-            hour: '2-digit',
-            minute: '2-digit',
-          });
-          setSyncStatus((prev) => ({
-            ...prev,
-            isSyncing: false,
-            isOnline: true,
-            lastSyncedAt: nowTime,
-            error: null,
-            mode: 'cpanel',
-          }));
-        } else {
-          setSyncStatus((prev) => ({
-            ...prev,
-            isSyncing: false,
-            error: result.message,
-            mode: 'cpanel',
-          }));
+        while (pendingPushPayloadRef.current) {
+          const currentPayload = pendingPushPayloadRef.current;
+          pendingPushPayloadRef.current = null;
+
+          const result = await syncAllToDatabase(undefined, currentPayload);
+          if (result.ok) {
+            if (!pendingPushPayloadRef.current) {
+              try {
+                localStorage.removeItem(PENDING_SYNC_STORAGE_KEY);
+              } catch {}
+            }
+            const nowTime = new Date().toLocaleTimeString('fa-IR', {
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+            setSyncStatus((prev) => ({
+              ...prev,
+              isSyncing: Boolean(pendingPushPayloadRef.current),
+              isOnline: true,
+              lastSyncedAt: nowTime,
+              error: null,
+              mode: 'cpanel',
+            }));
+          } else {
+            setSyncStatus((prev) => ({
+              ...prev,
+              isSyncing: false,
+              error: result.message,
+              mode: 'cpanel',
+            }));
+          }
         }
       } catch (err: any) {
         setSyncStatus((prev) => ({
@@ -112,7 +132,7 @@ export default function App() {
           mode: 'cpanel',
         }));
       } finally {
-        isSyncingRef.current = false;
+        isPushingRef.current = false;
       }
     },
     []
@@ -121,53 +141,75 @@ export default function App() {
   // Persist data locally and immediately push to MySQL database
   const updateData = useCallback(
     (newData: KharjYarStorageData, shouldPushToRemote = true) => {
-      setData(newData);
-      saveStorageData(newData);
+      const normalizedData: KharjYarStorageData = {
+        ...newData,
+        pettyCash: normalizePettyCash(newData.pettyCash),
+        updatedAt: new Date().toISOString(),
+      };
+
+      mutationVersionRef.current += 1;
+      latestDataRef.current = normalizedData;
+      setData(normalizedData);
+      saveStorageData(normalizedData);
 
       if (shouldPushToRemote) {
-        pushToRemote(newData);
+        try {
+          localStorage.setItem(PENDING_SYNC_STORAGE_KEY, 'true');
+        } catch {}
+        pushToRemote(normalizedData);
       }
     },
     [pushToRemote]
   );
 
-  // Fetch freshest data directly from MySQL database (Real-time pull)
+  // Fetch freshest data directly from MySQL database
   const pullFromRemote = useCallback(
     async (quiet = false) => {
-      if (isSyncingRef.current) return;
-      isSyncingRef.current = true;
+      if (isPushingRef.current) return;
+      const pullStartMutation = mutationVersionRef.current;
       setSyncStatus((prev) => ({ ...prev, isSyncing: true }));
 
       try {
+        // If a previous delete/edit was interrupted by an immediate refresh before reaching DB, push it first
+        let hasPendingLocalMutation = false;
+        try {
+          hasPendingLocalMutation = localStorage.getItem(PENDING_SYNC_STORAGE_KEY) === 'true';
+        } catch {}
+
+        if (hasPendingLocalMutation) {
+          const pushRes = await syncAllToDatabase(undefined, latestDataRef.current);
+          if (pushRes.ok) {
+            try {
+              localStorage.removeItem(PENDING_SYNC_STORAGE_KEY);
+            } catch {}
+          }
+        }
+
         const res = await fetchAllFromDatabase();
+
+        // Abort applying remote data if the user triggered a new delete/add while fetch was in flight
+        if (mutationVersionRef.current !== pullStartMutation || isPushingRef.current) {
+          return;
+        }
+
         if (res.ok && res.data) {
-          const remoteData = res.data;
-          const currentLocal = latestDataRef.current;
+          const remoteData: KharjYarStorageData = {
+            ...res.data,
+            expenses: Array.isArray(res.data.expenses) ? res.data.expenses : [],
+            categories:
+              Array.isArray(res.data.categories) && res.data.categories.length > 0
+                ? res.data.categories
+                : [...DEFAULT_CATEGORIES],
+            pettyCash: normalizePettyCash(res.data.pettyCash),
+            updatedAt: res.data.updatedAt || new Date().toISOString(),
+          };
 
-          const remoteExpenses = Array.isArray(remoteData.expenses) ? remoteData.expenses : [];
-          const localExpenses = Array.isArray(currentLocal.expenses) ? currentLocal.expenses : [];
+          latestDataRef.current = remoteData;
+          setData(remoteData);
+          saveStorageData(remoteData);
 
-          // Case 1: Remote database has expenses or has categories -> adopt remote as source of truth
-          if (remoteExpenses.length > 0 || (localExpenses.length === 0 && remoteData.categories?.length > 0)) {
-            setData(remoteData);
-            saveStorageData(remoteData);
-            if (!quiet) {
-              showToast('اطلاعات با موفقیت از دیتابیس MySQL همگام‌سازی شد 🗄️', 'info');
-            }
-          }
-          // Case 2: First-run migration - local has expenses but remote MySQL database is fresh
-          else if (localExpenses.length > 0 && remoteExpenses.length === 0) {
-            await syncAllToDatabase(undefined, currentLocal);
-          }
-          // Case 3: Compare timestamps
-          else {
-            const remoteTime = remoteData.updatedAt ? new Date(remoteData.updatedAt).getTime() : 0;
-            const localTime = currentLocal.updatedAt ? new Date(currentLocal.updatedAt).getTime() : 0;
-
-            if (remoteTime >= localTime) {
-              setData(remoteData);
-              saveStorageData(remoteData);
-            }
+          if (!quiet) {
+            showToast('اطلاعات با موفقیت از دیتابیس MySQL همگام‌سازی شد 🗄️', 'info');
           }
 
           const nowTime = new Date().toLocaleTimeString('fa-IR', {
@@ -197,8 +239,6 @@ export default function App() {
           error: err?.message || 'خطا در بارگذاری از دیتابیس MySQL',
           mode: 'cpanel',
         }));
-      } finally {
-        isSyncingRef.current = false;
       }
     },
     [showToast]

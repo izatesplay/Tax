@@ -22,11 +22,16 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 // Enable JSON body parsing with large limit for backup/sync
 app.use(express.json({ limit: '20mb' }));
 
-// CORS headers for all API requests
+// CORS & No-Cache headers for all API requests
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Cache-Control, Pragma');
+  if (req.path.startsWith('/api') || req.path.endsWith('.php')) {
+    res.header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.header('Pragma', 'no-cache');
+    res.header('Expires', '0');
+  }
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }

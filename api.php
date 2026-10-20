@@ -7,17 +7,21 @@
  * ۱. کاملاً مستقل و خودکفا بدون هیچ‌گونه نیاز به کتابخانه یا وابستگی خارجی (Pure PHP + MySQLi).
  * ۲. ساخت خودکار دیتابیس و تمامی جداول مورد نیاز برنامه در نخستین اجرا (Auto Schema Migration).
  * ۳. پشتیبانی کامل از زبان فارسی و کاراکترهای یونیکد (utf8mb4).
- * ۴. پشتیبانی بومی از CORS برای دسترسی امن از هر دامنه و مرورگر.
- * ۵. تراکنش‌های اتمیک (ACID Transaction) جهت حفظ یکپارچگی داده‌ها در ذخیره‌سازی همگانی.
+ * ۴. پشتیبانی بومی از CORS و ضد کش (No-Cache) برای همگام‌سازی آنی و دقیق در تمام مرورگرها.
+ * ۵. تراکنش‌های اتمیک (ACID Transaction) جهت حذف و ذخیره‌سازی دقیق هزینه‌ها و واریزی‌های تنخواه.
  * ۶. بدون چاپ هیچ‌گونه خروجی HTML یا اخطار؛ همواره پاسخ معتبر استاندارد JSON برمی‌گرداند.
  */
 
 // -------------------------------------------------------------
-// ۱. هدرهای CORS و فرمت خروجی JSON
+// ۱. هدرهای CORS، ضد کش (No-Cache) و فرمت خروجی JSON
 // -------------------------------------------------------------
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Cache-Control, Pragma");
+header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+header("Cache-Control: post-check=0, pre-check=0", false);
+header("Pragma: no-cache");
+header("Expires: 0");
 header("Content-Type: application/json; charset=utf-8");
 
 // پاسخ سریع به درخواست‌های مقدماتی (Preflight OPTIONS)
@@ -31,6 +35,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 error_reporting(0);
 ini_set('display_errors', '0');
 mysqli_report(MYSQLI_REPORT_OFF);
+
+// توابع کمکی تاریخ ایمن برای سازگاری کامل با PHP 8+
+function safeMysqlDateTime($val) {
+    if (empty($val) || !is_string($val)) {
+        return date('Y-m-d H:i:s');
+    }
+    $ts = strtotime($val);
+    return ($ts !== false && $ts > 0) ? date('Y-m-d H:i:s', $ts) : date('Y-m-d H:i:s');
+}
+
+function safeIsoDate($val) {
+    if (empty($val) || !is_string($val)) {
+        return date('c');
+    }
+    $ts = strtotime($val);
+    return ($ts !== false && $ts > 0) ? date('c', $ts) : date('c');
+}
 
 // تابع ارسال پاسخ استاندارد JSON
 function sendResponse($status, $message, $data = null, $httpCode = 200) {
@@ -69,7 +90,6 @@ $DB_PORT = (int)(getenv('DB_PORT') ?: 3306);
 // ۳. اتصال به MySQL
 // -------------------------------------------------------------
 try {
-    // تلاش برای اتصال مستقیم به دیتابیس مشخص‌شده
     $mysqli = @new mysqli($DB_HOST, $DB_USER, $DB_PASS, $DB_NAME, $DB_PORT);
 
     if ($mysqli->connect_errno) {
@@ -155,6 +175,10 @@ function initializeDatabaseTables($mysqli) {
     @$mysqli->query($sqlPettyCash);
     @$mysqli->query($sqlPettyCashHistory);
 
+    // اطمینان از وجود ستون‌ها در صورت استفاده از نسخه‌های قبلی جدول
+    @$mysqli->query("ALTER TABLE `kharjyar_petty_cash_history` ADD COLUMN `previous_balance` BIGINT DEFAULT 0");
+    @$mysqli->query("ALTER TABLE `kharjyar_petty_cash_history` ADD COLUMN `new_balance` BIGINT DEFAULT 0");
+
     // افزودن ردیف پیش‌فرض تنخواه در صورت عدم وجود
     $checkPetty = @$mysqli->query("SELECT COUNT(*) AS total FROM `kharjyar_petty_cash` WHERE `id` = 1");
     $pettyRow = $checkPetty ? $checkPetty->fetch_assoc() : null;
@@ -208,10 +232,10 @@ switch ($action) {
         $catCountRes = @$mysqli->query("SELECT COUNT(*) AS total FROM `kharjyar_categories`");
         $catData = $catCountRes ? $catCountRes->fetch_assoc() : ['total' => 0];
 
-        $pettyRes = @$mysqli->query("SELECT `initial_balance`, `updated_at` FROM `kharjyar_petty_cash` WHERE `id` = 1");
+        $pettyRes = @$mysqli->query("SELECT `initial_balance` FROM `kharjyar_petty_cash` WHERE `id` = 1");
         $pettyData = $pettyRes ? $pettyRes->fetch_assoc() : ['initial_balance' => 0];
 
-        sendResponse('success', 'اتصال به پایگاه‌داده MySQL خرجیار در هاست cPanel برقرار است ✅', [
+        sendResponse('success', 'اتصال به پایگاه‌داده MySQL خرجیار در cPanel برقرار است ✅', [
             'database' => $DB_NAME,
             'tables' => [
                 'categories' => (int)($catData['total'] ?? 0),
@@ -253,8 +277,8 @@ switch ($action) {
                     'categoryId' => $row['category_id'],
                     'date' => $row['date'],
                     'note' => $row['note'] !== null ? $row['note'] : null,
-                    'createdAt' => date('c', strtotime($row['created_at'])),
-                    'updatedAt' => date('c', strtotime($row['updated_at'])),
+                    'createdAt' => safeIsoDate($row['created_at']),
+                    'updatedAt' => safeIsoDate($row['updated_at']),
                 ];
             }
         }
@@ -265,10 +289,10 @@ switch ($action) {
         $pettyRes = @$mysqli->query("SELECT `initial_balance`, `updated_at` FROM `kharjyar_petty_cash` WHERE `id` = 1");
         if ($pettyRes && $row = $pettyRes->fetch_assoc()) {
             $initialBalance = (int)$row['initial_balance'];
-            $pettyUpdatedAt = date('c', strtotime($row['updated_at']));
+            $pettyUpdatedAt = safeIsoDate($row['updated_at']);
         }
 
-        // دریافت تاریخچه تنخواه
+        // دریافت تاریخچه و واریزی‌های تنخواه
         $history = [];
         $recharges = [];
         $histRes = @$mysqli->query("SELECT `id`, `type`, `amount`, `previous_balance`, `new_balance`, `date`, `note`, `created_at` FROM `kharjyar_petty_cash_history` ORDER BY `date` DESC, `created_at` DESC");
@@ -282,7 +306,7 @@ switch ($action) {
                     'newBalance' => $row['new_balance'] !== null ? (int)$row['new_balance'] : null,
                     'date' => $row['date'],
                     'note' => $row['note'] !== null ? $row['note'] : null,
-                    'createdAt' => date('c', strtotime($row['created_at'])),
+                    'createdAt' => safeIsoDate($row['created_at']),
                 ];
                 $history[] = $historyItem;
 
@@ -292,7 +316,7 @@ switch ($action) {
                         'amount' => (int)$row['amount'],
                         'date' => $row['date'],
                         'note' => $row['note'] !== null ? $row['note'] : null,
-                        'createdAt' => date('c', strtotime($row['created_at'])),
+                        'createdAt' => safeIsoDate($row['created_at']),
                     ];
                 }
             }
@@ -312,7 +336,7 @@ switch ($action) {
         ]);
         break;
 
-    // همگام‌سازی و ذخیره‌سازی داده‌ها با تراکنش ایمن
+    // همگام‌سازی، حذف و ذخیره‌سازی داده‌ها با تراکنش ایمن
     case 'sync_all':
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             sendResponse('error', 'برای همگام‌سازی، متد POST الزامی است.', null, 200);
@@ -331,14 +355,19 @@ switch ($action) {
         $expenses = isset($content['expenses']) && is_array($content['expenses']) ? $content['expenses'] : [];
         $pettyCash = isset($content['pettyCash']) && is_array($content['pettyCash']) ? $content['pettyCash'] : [];
 
+        // غیرفعال کردن محدودیت‌های SQL_SAFE_UPDATES تا عملیات DELETE به طور کامل در تمام هاست‌ها اجرا شود
+        @$mysqli->query("SET SQL_SAFE_UPDATES = 0");
+        @$mysqli->query("SET FOREIGN_KEY_CHECKS = 0");
+
         // آغاز تراکنش امن
         $mysqli->begin_transaction();
 
         try {
             // ۱. بروزرسانی دسته‌بندی‌ها در صورت وجود
             if (!empty($categories)) {
+                $mysqli->query("DELETE FROM `kharjyar_categories` WHERE `id` <> ''");
                 $mysqli->query("DELETE FROM `kharjyar_categories`");
-                $catStmt = $mysqli->prepare("INSERT INTO `kharjyar_categories` (`id`, `name`, `icon`, `color`, `is_default`) VALUES (?, ?, ?, ?, ?)");
+                $catStmt = $mysqli->prepare("REPLACE INTO `kharjyar_categories` (`id`, `name`, `icon`, `color`, `is_default`) VALUES (?, ?, ?, ?, ?)");
                 if ($catStmt) {
                     foreach ($categories as $cat) {
                         $cId = (string)($cat['id'] ?? '');
@@ -355,10 +384,11 @@ switch ($action) {
                 }
             }
 
-            // ۲. بروزرسانی هزینه‌ها
+            // ۲. حذف کامل هزینه‌های پاک‌شده و درج لیست جدید هزینه‌ها
+            $mysqli->query("DELETE FROM `kharjyar_expenses` WHERE `id` <> ''");
             $mysqli->query("DELETE FROM `kharjyar_expenses`");
             if (!empty($expenses)) {
-                $expStmt = $mysqli->prepare("INSERT INTO `kharjyar_expenses` (`id`, `title`, `amount`, `category_id`, `date`, `note`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                $expStmt = $mysqli->prepare("REPLACE INTO `kharjyar_expenses` (`id`, `title`, `amount`, `category_id`, `date`, `note`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
                 if ($expStmt) {
                     foreach ($expenses as $exp) {
                         $eId = (string)($exp['id'] ?? '');
@@ -366,9 +396,9 @@ switch ($action) {
                         $eAmount = (int)($exp['amount'] ?? 0);
                         $eCatId = (string)($exp['categoryId'] ?? 'cat_other');
                         $eDate = (string)($exp['date'] ?? date('Y-m-d'));
-                        $eNote = isset($exp['note']) ? (string)$exp['note'] : null;
-                        $eCreatedAt = isset($exp['createdAt']) ? date('Y-m-d H:i:s', strtotime($exp['createdAt'])) : date('Y-m-d H:i:s');
-                        $eUpdatedAt = isset($exp['updatedAt']) ? date('Y-m-d H:i:s', strtotime($exp['updatedAt'])) : date('Y-m-d H:i:s');
+                        $eNote = isset($exp['note']) && $exp['note'] !== '' ? (string)$exp['note'] : null;
+                        $eCreatedAt = safeMysqlDateTime($exp['createdAt'] ?? null);
+                        $eUpdatedAt = safeMysqlDateTime($exp['updatedAt'] ?? null);
 
                         if ($eId && $eTitle && $eAmount > 0) {
                             $expStmt->bind_param("ssisssss", $eId, $eTitle, $eAmount, $eCatId, $eDate, $eNote, $eCreatedAt, $eUpdatedAt);
@@ -379,29 +409,44 @@ switch ($action) {
                 }
             }
 
-            // ۳. بروزرسانی تنخواه
+            // ۳. بروزرسانی موجودی پایه تنخواه
             $initialBalance = (int)($pettyCash['initialBalance'] ?? 0);
             $pettyNow = date('Y-m-d H:i:s');
             $mysqli->query("REPLACE INTO `kharjyar_petty_cash` (`id`, `initial_balance`, `updated_at`) VALUES (1, {$initialBalance}, '{$pettyNow}')");
 
-            // ۴. بروزرسانی تاریخچه و شارژهای تنخواه
-            $historyItems = isset($pettyCash['history']) && is_array($pettyCash['history']) ? $pettyCash['history'] : [];
-            if (empty($historyItems) && isset($pettyCash['recharges']) && is_array($pettyCash['recharges'])) {
-                foreach ($pettyCash['recharges'] as $r) {
+            // ۴. بروزرسانی دقیق تاریخچه و شارژهای تنخواه (حذف قطعی واریزی‌های پاک‌شده)
+            $rawHistory = isset($pettyCash['history']) && is_array($pettyCash['history']) ? $pettyCash['history'] : [];
+            $hasRechargesArray = isset($pettyCash['recharges']) && is_array($pettyCash['recharges']);
+            $rechargesList = $hasRechargesArray ? $pettyCash['recharges'] : [];
+
+            $historyItems = [];
+            if ($hasRechargesArray) {
+                // فقط رویدادهای غیرشارژ را از تاریخچه نگه می‌داریم و لیست شارژهای فعال را مستقیماً از recharges می‌سازیم
+                foreach ($rawHistory as $h) {
+                    if (isset($h['type']) && $h['type'] !== 'recharge') {
+                        $historyItems[] = $h;
+                    }
+                }
+                foreach ($rechargesList as $r) {
                     $historyItems[] = [
-                        'id' => $r['id'] ?? uniqid('pevt_'),
+                        'id' => $r['id'] ?? uniqid('rech_'),
                         'type' => 'recharge',
                         'amount' => $r['amount'] ?? 0,
+                        'previousBalance' => null,
+                        'newBalance' => null,
                         'date' => $r['date'] ?? date('Y-m-d'),
                         'note' => $r['note'] ?? null,
                         'createdAt' => $r['createdAt'] ?? date('c'),
                     ];
                 }
+            } else {
+                $historyItems = $rawHistory;
             }
 
+            $mysqli->query("DELETE FROM `kharjyar_petty_cash_history` WHERE `id` <> ''");
             $mysqli->query("DELETE FROM `kharjyar_petty_cash_history`");
             if (!empty($historyItems)) {
-                $histStmt = $mysqli->prepare("INSERT INTO `kharjyar_petty_cash_history` (`id`, `type`, `amount`, `previous_balance`, `new_balance`, `date`, `note`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                $histStmt = $mysqli->prepare("REPLACE INTO `kharjyar_petty_cash_history` (`id`, `type`, `amount`, `previous_balance`, `new_balance`, `date`, `note`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
                 if ($histStmt) {
                     foreach ($historyItems as $h) {
                         $hId = (string)($h['id'] ?? uniqid('pevt_'));
@@ -410,8 +455,8 @@ switch ($action) {
                         $hPrev = isset($h['previousBalance']) ? (int)$h['previousBalance'] : null;
                         $hNew = isset($h['newBalance']) ? (int)$h['newBalance'] : null;
                         $hDate = (string)($h['date'] ?? date('Y-m-d'));
-                        $hNote = isset($h['note']) ? (string)$h['note'] : null;
-                        $hCreatedAt = isset($h['createdAt']) ? date('Y-m-d H:i:s', strtotime($h['createdAt'])) : date('Y-m-d H:i:s');
+                        $hNote = isset($h['note']) && $h['note'] !== '' ? (string)$h['note'] : null;
+                        $hCreatedAt = safeMysqlDateTime($h['createdAt'] ?? null);
 
                         $histStmt->bind_param("ssiiisss", $hId, $hType, $hAmount, $hPrev, $hNew, $hDate, $hNote, $hCreatedAt);
                         $histStmt->execute();

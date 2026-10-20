@@ -29,6 +29,7 @@ import {
   exportExpensesCsv,
   generateUniqueId,
   calculatePettyCashSummary,
+  normalizePettyCash,
 } from '../services/storage';
 import { toPersianDigits, formatToman } from '../utils/formatters';
 import { formatJalaliDateShort, getTehranToday } from '../utils/jalali';
@@ -84,17 +85,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // Delete a specific recharge
   const handleDeleteRecharge = (id: string) => {
     const remaining = (data.pettyCash.recharges || []).filter((r) => r.id !== id);
-    const remainingHistory = (data.pettyCash.history || []).filter((h) => h.id !== id);
+    const remainingHistory = (data.pettyCash.history || []).filter(
+      (h) => h.id !== id && h.type !== 'recharge'
+    );
+    const updatedPettyCash = normalizePettyCash({
+      ...data.pettyCash,
+      recharges: remaining,
+      history: remainingHistory,
+      updatedAt: new Date().toISOString(),
+    });
+
     onUpdateAllData({
       ...data,
-      pettyCash: {
-        ...data.pettyCash,
-        recharges: remaining,
-        history: remainingHistory,
-        updatedAt: new Date().toISOString(),
-      },
+      pettyCash: updatedPettyCash,
+      updatedAt: new Date().toISOString(),
     });
-    onShowToast('شارژ مورد نظر با موفقیت حذف شد', 'info');
+    onShowToast('شارژ مورد نظر با موفقیت از سایت و دیتابیس حذف شد ✅', 'success');
   };
 
   // Reset petty cash
@@ -112,16 +118,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       createdAt: nowIso,
     };
 
+    const nonRechargeHistory = (data.pettyCash.history || []).filter(
+      (h) => h.type !== 'recharge'
+    );
+
     onUpdateAllData({
       ...data,
-      pettyCash: {
+      pettyCash: normalizePettyCash({
         initialBalance: 0,
         recharges: [],
-        history: [resetEvent, ...(data.pettyCash.history || [])],
+        history: [resetEvent, ...nonRechargeHistory],
         updatedAt: nowIso,
-      },
+      }),
+      updatedAt: nowIso,
     });
-    onShowToast('موجودی تنخواه بازنشانی و صفر شد', 'info');
+    onShowToast('موجودی تنخواه بازنشانی و صفر شد ✅', 'info');
   };
 
   // Database & Sync state (via api.php)

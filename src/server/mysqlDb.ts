@@ -331,14 +331,31 @@ export async function syncAllToMysql(pool: Pool, data: any) {
       [initialBalance]
     );
 
-    // 4. Petty Cash History
+    // 4. Petty Cash History (strictly sync active recharges from pettyCash.recharges)
     await conn.query('DELETE FROM `kharjyar_petty_cash_history`');
-    const history = Array.isArray(pettyCash.history) ? pettyCash.history : [];
-    for (const h of history) {
+    const rawHistory = Array.isArray(pettyCash.history) ? pettyCash.history : [];
+    const hasRecharges = Array.isArray(pettyCash.recharges);
+    const historyToSave = hasRecharges
+      ? [
+          ...rawHistory.filter((h: any) => h && h.type && h.type !== 'recharge'),
+          ...pettyCash.recharges.map((r: any) => ({
+            id: r.id,
+            type: 'recharge',
+            amount: r.amount,
+            previousBalance: null,
+            newBalance: null,
+            date: r.date,
+            note: r.note,
+            createdAt: r.createdAt,
+          })),
+        ]
+      : rawHistory;
+
+    for (const h of historyToSave) {
       if (h.id) {
         const createdAt = h.createdAt ? new Date(h.createdAt) : new Date();
         await conn.query(
-          'INSERT INTO `kharjyar_petty_cash_history` (`id`, `type`, `amount`, `previous_balance`, `new_balance`, `date`, `note`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          'REPLACE INTO `kharjyar_petty_cash_history` (`id`, `type`, `amount`, `previous_balance`, `new_balance`, `date`, `note`, `created_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           [h.id, h.type || 'recharge', h.amount || 0, h.previousBalance ?? null, h.newBalance ?? null, h.date, h.note || null, createdAt]
         );
       }
@@ -348,7 +365,7 @@ export async function syncAllToMysql(pool: Pool, data: any) {
     return {
       syncedExpenses: expenses.length,
       syncedCategories: categories.length,
-      syncedHistory: history.length,
+      syncedHistory: historyToSave.length,
     };
   } catch (err) {
     await conn.rollback();

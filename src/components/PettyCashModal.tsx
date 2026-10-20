@@ -106,8 +106,9 @@ export const PettyCashModal: React.FC<PettyCashModalProps> = ({
 
       setIsSubmitting(true);
       const nowIso = new Date().toISOString();
+      const rechargeId = generateUniqueId('rech');
       const newRecharge: PettyCashRecharge = {
-        id: generateUniqueId('rech'),
+        id: rechargeId,
         amount,
         date: rechargeDate,
         note: rechargeNote.trim() || undefined,
@@ -115,7 +116,7 @@ export const PettyCashModal: React.FC<PettyCashModalProps> = ({
       };
 
       const newEvent: PettyCashEvent = {
-        id: generateUniqueId('pevt'),
+        id: rechargeId,
         type: 'recharge',
         amount,
         date: rechargeDate,

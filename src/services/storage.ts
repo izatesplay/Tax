@@ -34,6 +34,60 @@ export function generateUniqueId(prefix = 'exp'): string {
 }
 
 /**
+ * Keeps pettyCash.recharges and pettyCash.history strictly synchronized
+ * so deleted recharges never remain orphaned in history or reappear after refresh.
+ */
+export function normalizePettyCash(rawPettyCash?: Partial<PettyCashConfig> | null): PettyCashConfig {
+  if (!rawPettyCash || typeof rawPettyCash !== 'object') {
+    return { ...DEFAULT_PETTY_CASH, updatedAt: new Date().toISOString() };
+  }
+
+  const initialBalance =
+    typeof rawPettyCash.initialBalance === 'number' && rawPettyCash.initialBalance >= 0
+      ? rawPettyCash.initialBalance
+      : 0;
+
+  const recharges = Array.isArray(rawPettyCash.recharges)
+    ? rawPettyCash.recharges.map((r: any) => ({
+        id: r.id || generateUniqueId('rech'),
+        amount: Number(r.amount) || 0,
+        date: r.date || new Date().toISOString().slice(0, 10),
+        note: r.note || undefined,
+        createdAt: r.createdAt || new Date().toISOString(),
+      }))
+    : [];
+
+  // Keep only non-recharge events from history, and rebuild recharge events from active recharges
+  const rawHistory = Array.isArray(rawPettyCash.history) ? rawPettyCash.history : [];
+  const nonRechargeEvents: PettyCashEvent[] = rawHistory.filter(
+    (h: any) => h && h.type && h.type !== 'recharge'
+  );
+
+  const rechargeEvents: PettyCashEvent[] = recharges.map((r) => ({
+    id: r.id,
+    type: 'recharge' as const,
+    amount: r.amount,
+    date: r.date,
+    note: r.note,
+    createdAt: r.createdAt,
+  }));
+
+  const mergedHistory = [...rechargeEvents, ...nonRechargeEvents].sort((a, b) => {
+    if (a.date !== b.date) {
+      return (b.date || '').localeCompare(a.date || '');
+    }
+    return (b.createdAt || '').localeCompare(a.createdAt || '');
+  });
+
+  return {
+    initialBalance,
+    recharges,
+    history: mergedHistory,
+    updatedAt: rawPettyCash.updatedAt || new Date().toISOString(),
+  };
+}
+
+/**
  * Loads data safely from localStorage
  */
 export function loadStorageData(): KharjYarStorageData {
@@ -65,39 +119,8 @@ export function loadStorageData(): KharjYarStorageData {
     // Ensure expenses is array
     const expenses: Expense[] = Array.isArray(parsed.expenses) ? parsed.expenses : [];
 
-    // Ensure pettyCash exists and has history
-    let pettyCashHistory: PettyCashEvent[] = [];
-    if (parsed.pettyCash && Array.isArray(parsed.pettyCash.history)) {
-      pettyCashHistory = parsed.pettyCash.history;
-    } else if (parsed.pettyCash && Array.isArray(parsed.pettyCash.recharges)) {
-      pettyCashHistory = parsed.pettyCash.recharges.map((r: any) => ({
-        id: r.id || generateUniqueId('pevt'),
-        type: 'recharge' as const,
-        amount: r.amount,
-        date: r.date,
-        note: r.note,
-        createdAt: r.createdAt || new Date().toISOString(),
-      }));
-      if (parsed.pettyCash.initialBalance > 0) {
-        pettyCashHistory.unshift({
-          id: generateUniqueId('pevt'),
-          type: 'initial' as const,
-          amount: parsed.pettyCash.initialBalance,
-          date: parsed.pettyCash.updatedAt ? parsed.pettyCash.updatedAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
-          note: 'تنظیم اولیه موجودی',
-          createdAt: parsed.pettyCash.updatedAt || new Date().toISOString(),
-        });
-      }
-    }
-
-    const pettyCash: PettyCashConfig = parsed.pettyCash && typeof parsed.pettyCash === 'object'
-      ? {
-          initialBalance: typeof parsed.pettyCash.initialBalance === 'number' && parsed.pettyCash.initialBalance >= 0 ? parsed.pettyCash.initialBalance : 0,
-          recharges: Array.isArray(parsed.pettyCash.recharges) ? parsed.pettyCash.recharges : [],
-          history: pettyCashHistory,
-          updatedAt: parsed.pettyCash.updatedAt || new Date().toISOString(),
-        }
-      : { ...DEFAULT_PETTY_CASH };
+    // Ensure pettyCash is normalized so recharges and history match 1-to-1
+    const pettyCash: PettyCashConfig = normalizePettyCash(parsed.pettyCash);
 
     return {
       version: parsed.version || CURRENT_SCHEMA_VERSION,
@@ -126,8 +149,9 @@ export function saveStorageData(data: KharjYarStorageData): { success: boolean; 
   try {
     const toSave: KharjYarStorageData = {
       ...data,
+      pettyCash: normalizePettyCash(data.pettyCash),
       version: CURRENT_SCHEMA_VERSION,
-      updatedAt: new Date().toISOString(),
+      updatedAt: data.updatedAt || new Date().toISOString(),
     };
     const serialized = JSON.stringify(toSave);
     localStorage.setItem(STORAGE_KEY, serialized);
